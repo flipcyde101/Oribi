@@ -29,51 +29,37 @@ Detection owns what is observed. Reasoning owns qualified interpretations and re
 
 ```text
 oribi/
-  __init__.py              # exports inspect and public result/model types
-  _version.py              # package version
-  api.py                   # inspect options, orchestration boundary
-  exceptions.py            # public input/analysis errors
+  __init__.py              # public API exports
+  api.py                   # inspect(), profile options, and orchestration
   models/
-    __init__.py
-    context.py              # DatasetContext, ColumnContext
-    evidence.py             # Evidence, Inference, Recommendation, Warning
-    profile.py              # schema and statistics value objects
+    context.py             # dataset and column contexts
+    evidence.py            # evidence, inferences, recommendations, and warnings
+    profile.py             # profile and statistics models
   profiling/
-    __init__.py
-    observations.py         # shared scans and cached column primitives
-    schema.py               # dataframe and dtype observations
-    columns.py              # missingness/cardinality/value summaries
-    numeric.py              # bounded numeric statistics
-    temporal.py             # temporal statistics
-    categorical.py          # top values and text characteristics
-    keys.py                 # uniqueness and candidate key observations
-    relationships.py        # conservative within-frame relationships
+    observations.py        # shared column observations
+    columns.py             # missingness, cardinality, and value statistics
+    temporal.py            # fixed cadence and potential temporal gaps
+    relationships.py       # conservative within-frame relationship evidence
   reasoning/
-    __init__.py
-    semantic.py             # composable semantic rules and role resolution
-    grain.py                # candidate grain ranking
-    aggregation.py          # operation recommendations
-    warnings.py             # structured warning rules
+    semantic.py            # semantic role inference
+    keys.py                # candidate keys and grain selection
+    rules.py               # warnings and aggregation recommendations
   serialization/
-    __init__.py
-    dict.py                 # canonical JSON-compatible projection
-    markdown.py             # human-oriented rendering
-    context.py              # compact AI-oriented rendering
+    dict.py                # canonical dictionary and JSON projection
+    markdown.py            # human-readable Markdown rendering
+    context.py             # compact context rendering
 tests/
-  conftest.py
-  fixtures/                 # small deterministic fixture builders
   test_api.py
   test_profiling.py
   test_semantics.py
   test_keys_grain.py
   test_reasoning.py
+  test_relationships.py
   test_serialization.py
-  test_edge_cases.py
-docs/
-  architecture.md           # this document
+  test_audit_regressions.py
 ```
 
-Avoid splitting every rule into a module or exposing the directory structure as public API. `relationships.py` is intentionally modest in v1: same-frame evidence such as duplicate/near-duplicate columns and plausible identifier-to-dimension links, without a join engine. Package metadata should declare supported Python versions and pandas version range in `pyproject.toml`; make pandas the sole required dependency. Test/lint tooling belongs in optional development dependencies.
+Avoid splitting every rule into a module or exposing the directory structure as public API. `oribi/profiling/relationships.py` gathers same-frame evidence such as duplicate or near-duplicate columns and plausible identifier-to-dimension links. `pyproject.toml` declares the supported Python and pandas versions, along with development extras.
 
 ## 4. Core models
 
