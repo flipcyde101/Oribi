@@ -106,6 +106,10 @@ context = inspect(
 
 Options include `top_k`, `include_quantiles`, `max_exact_rows`, `max_key_columns`, `max_relationships`, `max_relationship_columns`, `max_gap_examples`, and `max_gap_warnings`.
 
+`max_exact_rows` is an inclusive row-count limit on numeric quantiles, composite-key pair scans, and observed relationship scans. At or below the limit, each calculation also depends on its own options and on eligible input. Above the limit, quantiles are omitted, composite-key pairs are skipped, and the observed relationship collection is empty. Single-column observations, cardinalities, and semantic inference still run.
+
+Use `context.profile.row_count` and the configured limit to tell when these calculations were skipped by the limit. If the grain also remains undetermined, its evidence reports `key_search_bounded` above the limit. An empty quantile mapping or observed relationship collection alone cannot show whether a calculation ran.
+
 ## How to interpret the results
 
 Oribi uses deterministic heuristics based on observed values, data types, and supporting evidence. Column names can contribute to role inference, but they cannot establish a relationship by themselves.

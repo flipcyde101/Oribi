@@ -21,7 +21,13 @@ from .reasoning.semantic import infer_semantic
 
 @dataclass(frozen=True)
 class ProfileOptions:
-    """Controls profiling work while keeping results deterministic."""
+    """Controls profiling work while keeping results deterministic.
+
+    ``max_exact_rows`` limits numeric quantiles, composite-key searches, and
+    observed relationship scans. Above the limit these calculations are
+    skipped. At or below it they still depend on the other profile options
+    and on eligible input.
+    """
 
     top_k: int = 10
     include_quantiles: bool = True

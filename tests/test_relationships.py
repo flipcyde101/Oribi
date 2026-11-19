@@ -1,6 +1,6 @@
 import pandas as pd
 
-from oribi import CardinalityContext, inspect
+from oribi import CardinalityContext, ProfileOptions, inspect
 
 
 def _column(context, name):
@@ -33,6 +33,22 @@ def test_one_to_many_uses_observed_group_and_unique_entity_values():
     assert relation.evidence[0].details["average_entities_per_group"] == 4
     assert relation.evidence[0].details["minimum_entities_per_group"] == 4
     assert relation.evidence[0].details["maximum_entities_per_group"] == 4
+
+
+def test_relationship_scan_runs_below_and_at_limit_but_is_skipped_above():
+    frame = pd.DataFrame({
+        "customer_id": ["c0", "c0", "c1", "c1", "c2"],
+        "order_id": [f"o{i}" for i in range(5)],
+    })
+
+    below = inspect(frame.iloc[:3], options=ProfileOptions(max_exact_rows=4))
+    at_limit = inspect(frame.iloc[:4], options=ProfileOptions(max_exact_rows=4))
+    above = inspect(frame, options=ProfileOptions(max_exact_rows=4))
+
+    assert any(relation.kind == "one_to_many" for relation in below.relationships)
+    assert any(relation.kind == "one_to_many" for relation in at_limit.relationships)
+    assert above.relationships == ()
+    assert _column(above, "order_id").cardinality.unique_count == 5
 
 
 def test_context_explains_grouping_key_and_sql_relevant_cardinality():

@@ -21,6 +21,16 @@ def test_options_control_quantiles(sales_frame):
     assert context.columns[2].statistics.quantiles == {}
 
 
+def test_max_exact_rows_includes_quantiles_at_limit_and_omits_them_above():
+    def quantiles(row_count):
+        frame = pd.DataFrame({"value": [float(index) for index in range(row_count)]})
+        return inspect(frame, options=ProfileOptions(max_exact_rows=3)).columns[0].statistics.quantiles
+
+    assert quantiles(2)
+    assert quantiles(3)
+    assert quantiles(4) == {}
+
+
 def test_rejects_invalid_inputs():
     with pytest.raises(InvalidInputError):
         inspect([1, 2, 3])

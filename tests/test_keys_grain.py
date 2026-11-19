@@ -107,14 +107,20 @@ def test_composite_search_is_bounded_by_max_key_columns():
     assert composites == [("a_id", "b_id")]
 
 
-def test_composite_search_is_skipped_above_exact_row_limit():
+def test_composite_search_runs_below_and_at_limit_but_is_skipped_above():
     frame = pd.DataFrame({
-        "order_id": [1001, 1001, 1002, 1002],
-        "product_id": ["A", "B", "A", "B"],
+        "order_id": [1001, 1001, 1002, 1002, 1003],
+        "product_id": ["A", "B", "A", "B", "A"],
     })
-    context = inspect(frame, options=ProfileOptions(max_exact_rows=3))
-    assert context.candidate_keys == ()
-    assert context.grain.evidence[0].code == "key_search_bounded"
+
+    below = inspect(frame.iloc[:3], options=ProfileOptions(max_exact_rows=4))
+    at_limit = inspect(frame.iloc[:4], options=ProfileOptions(max_exact_rows=4))
+    above = inspect(frame, options=ProfileOptions(max_exact_rows=4))
+
+    assert [key.columns for key in below.candidate_keys] == [("order_id", "product_id")]
+    assert [key.columns for key in at_limit.candidate_keys] == [("order_id", "product_id")]
+    assert above.candidate_keys == ()
+    assert above.grain.evidence[0].code == "key_search_bounded"
 
 
 def test_empty_and_tiny_frames_are_safe():
