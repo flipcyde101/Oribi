@@ -213,6 +213,22 @@ def test_multiindex_missing_values_are_counted_like_pandas():
     assert profile.is_unique is False
 
 
+def test_multiindex_with_repeated_names_is_profiled():
+    index = pd.MultiIndex.from_tuples(
+        [("us", 1), ("us", 1), ("ca", 2), (None, 3)], names=["key", "key"]
+    )
+    result = inspect(pd.DataFrame({"value": [1.0, 2.0, 3.0, 4.0]}, index=index))
+    profile = result.profile.index
+
+    assert profile.names == ("key", "key")
+    assert profile.level_count == 2
+    assert profile.unique_count == 3
+    assert profile.missing_count == 1
+    assert profile.duplicate_count == 1
+    assert profile.is_unique is False
+    assert result.to_dict()["profile"]["index"]["names"] == ["key", "key"]
+
+
 @pytest.mark.parametrize(
     ("index", "label"),
     [

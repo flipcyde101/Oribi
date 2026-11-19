@@ -54,7 +54,12 @@ def _profile_index(df: pd.DataFrame) -> IndexContext | None:
         return None
     names = tuple(index.names)
     dtypes = tuple(str(index.get_level_values(i).dtype) for i in range(index.nlevels))
-    missing = int(index.to_frame(index=False).isna().any(axis=1).sum())
+    if isinstance(index, pd.MultiIndex):
+        # Level names may repeat, so use positional labels for this temporary frame.
+        index_frame = index.to_frame(index=False, name=list(range(index.nlevels)))
+    else:
+        index_frame = index.to_frame(index=False)
+    missing = int(index_frame.isna().any(axis=1).sum())
     try:
         unique = int(index.nunique()) if index.nlevels == 1 else int(len(index.unique()))
     except (TypeError, ValueError):
