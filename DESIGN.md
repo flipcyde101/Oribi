@@ -59,7 +59,7 @@ tests/
   test_audit_regressions.py
 ```
 
-Avoid splitting every rule into a module or exposing the directory structure as public API. `oribi/profiling/relationships.py` gathers same-frame evidence such as duplicate or near-duplicate columns and plausible identifier-to-dimension links. `pyproject.toml` declares the supported Python and pandas versions, along with development extras.
+Avoid splitting every rule into a module or exposing the directory structure as public API. `oribi/profiling/relationships.py` is intentionally modest in v1: same-frame evidence such as duplicate/near-duplicate columns and plausible identifier-to-dimension links, without a join engine. Package metadata should declare supported Python versions and pandas version range in `pyproject.toml`; make pandas the sole required dependency. Test/lint tooling belongs in optional development dependencies.
 
 ## 4. Core models
 
