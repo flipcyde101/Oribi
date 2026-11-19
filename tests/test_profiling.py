@@ -79,6 +79,18 @@ def test_weekly_cadence_is_supported():
     assert warnings[0].evidence[0].details["cadence"] == "7 days"
 
 
+def test_temporal_gap_warning_preserves_nanosecond_cadence():
+    _, _, warnings = _temporal_warnings(pd.to_datetime([0, 5, 10, 20, 25], unit="ns"))
+    (warning,) = warnings
+    (evidence,) = warning.evidence
+    cadence = "0 days 00:00:00.000000005"
+
+    assert evidence.details["cadence"] == cadence
+    assert f"{cadence} cadence" in warning.message
+    assert evidence.details["missing_intervals"] == 1
+    assert evidence.details["expected_timestamps"] == ("1970-01-01T00:00:00.000000015",)
+
+
 def test_irregular_series_does_not_generate_gap_warning():
     _, _, warnings = _temporal_warnings(["2026-01-01", "2026-01-03", "2026-01-08", "2026-01-09", "2026-01-17", "2026-01-25"])
     assert warnings == []

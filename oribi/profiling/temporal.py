@@ -85,9 +85,11 @@ def temporal_gap_warnings(series: pd.Series, column_name: str, *, max_examples: 
 
 def _format_timedelta(value: pd.Timedelta) -> str:
     """Format common fixed cadence durations consistently."""
-    seconds = value.total_seconds()
+    if value.microseconds or value.nanoseconds:
+        return str(value)
+    seconds = value.days * 86400 + value.seconds
     for size, unit in ((86400, "day"), (3600, "hour"), (60, "minute"), (1, "second")):
         if seconds % size == 0:
-            amount = int(seconds / size)
+            amount = seconds // size
             return f"{amount} {unit}{'' if amount == 1 else 's'}"
     return str(value)
