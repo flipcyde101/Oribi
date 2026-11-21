@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import date, datetime
-from numbers import Number
+from numbers import Integral, Number
 from typing import Any, NamedTuple, SupportsInt
 
 from .aggregations import aggregation_conditions
@@ -223,6 +223,9 @@ def _format_range_value(value: Any) -> str:
 
 
 def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = False) -> str:
+    if isinstance(max_chars, bool) or not isinstance(max_chars, Integral):
+        raise ValueError("max_chars must be an integer")
+    max_chars = int(max_chars)
     if max_chars < 100:
         raise ValueError("max_chars must be at least 100")
     p = context.profile

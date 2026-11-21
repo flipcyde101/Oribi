@@ -127,7 +127,7 @@ Oribi uses deterministic heuristics based on observed values, data types, and su
 - A relationship within one DataFrame does not prove that a join to another table is valid or safe.
 - Confidence scores describe heuristic strength. They are not calibrated probabilities.
 
-Use the profile as evidence for further analysis, and check whether each inference fits the dataset's actual domain.
+Use the profile as evidence for further analysis, and check whether each inference fits the dataset's actual domain. For a runnable Python example that inspects `context.candidate_keys` (`columns` and `verified_unique`) alongside `context.grain`, see [examples/quickstart.py](examples/quickstart.py) (`python -m examples.quickstart`).
 
 ## Current scope and limitations
 
