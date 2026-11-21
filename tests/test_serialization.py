@@ -212,6 +212,66 @@ def test_inspect_preserves_cycles_and_shared_items_in_a_snapshot():
     assert snapshot["first"] is not shared
 
 
+def _make_circular_list() -> list[object]:
+    sample: list[object] = []
+    sample.append(sample)
+    return sample
+
+
+def _make_circular_dict() -> dict[str, object]:
+    sample: dict[str, object] = {}
+    sample["self"] = sample
+    return sample
+
+
+def _make_nested_circular() -> dict[str, object]:
+    inner: list[object] = []
+    outer: dict[str, object] = {"nested": inner}
+    inner.append(outer)
+    return outer
+
+
+@pytest.mark.parametrize(
+    "make_sample",
+    [
+        pytest.param(_make_circular_list, id="circular-list"),
+        pytest.param(_make_circular_dict, id="circular-dict"),
+        pytest.param(_make_nested_circular, id="nested-circular"),
+    ],
+)
+def test_opt_in_exports_reject_circular_sampled_values_while_default_succeeds(make_sample):
+    context = inspect(pd.DataFrame({"items": [make_sample()]}))
+
+    default_dict = context.to_dict()
+    assert default_dict["columns"][0]["statistics"]["top_values"] == []
+    assert json.loads(context.to_json()) == default_dict
+
+    with pytest.raises(ValueError, match="circular"):
+        context.to_dict(include_values=True)
+    with pytest.raises(ValueError, match="circular"):
+        context.to_json(include_values=True)
+
+
+def test_opt_in_exports_allow_shared_non_circular_references():
+    shared_list = ["a", "b"]
+    shared_dict = {"k": 1}
+    sample = {
+        "first": shared_list,
+        "second": shared_list,
+        "pairs": [shared_dict, shared_dict],
+    }
+    context = inspect(pd.DataFrame({"items": [sample]}))
+
+    exported = context.to_dict(include_values=True)
+    expected = {
+        "first": ["a", "b"],
+        "second": ["a", "b"],
+        "pairs": [{"k": 1}, {"k": 1}],
+    }
+    assert exported["columns"][0]["statistics"]["top_values"] == [[expected, 1]]
+    assert json.loads(context.to_json(include_values=True)) == exported
+
+
 def test_context_limit_keeps_an_explicit_marker_for_long_labels():
     import pandas as pd
 

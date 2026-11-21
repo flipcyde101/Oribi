@@ -10,39 +10,70 @@ from typing import Any
 from ..models.evidence import CategoricalContext
 
 
-def _normalize(value: Any, include_values: bool = False, *, evidence_details: bool = False) -> Any:
-    if is_dataclass(value):
-        result: dict[str, Any] = {}
-        for field in fields(value):
-            if not include_values and (
-                field.name == "top_values"
-                or (isinstance(value, CategoricalContext) and field.name == "values")
-            ):
-                result[field.name] = []
-            else:
-                result[field.name] = _normalize(
-                    getattr(value, field.name), include_values,
-                    evidence_details=(type(value).__name__ == "Evidence" and field.name == "details"),
-                )
-        return result
-    if isinstance(value, Mapping):
-        result = {}
-        for key, item in value.items():
-            if evidence_details and not include_values and isinstance(item, str):
-                continue
-            if evidence_details and not include_values and isinstance(item, (tuple, list)) and any(isinstance(v, str) for v in item):
-                continue
-            result[str(key)] = _normalize(item, include_values, evidence_details=evidence_details)
-        return result
-    if isinstance(value, (tuple, list)):
-        return [_normalize(v, include_values, evidence_details=evidence_details) for v in value]
+def _normalize(
+    value: Any,
+    include_values: bool = False,
+    *,
+    evidence_details: bool = False,
+    seen: set[int] | None = None,
+) -> Any:
+    active = set() if seen is None else seen
+    if is_dataclass(value) or isinstance(value, (Mapping, tuple, list)):
+        identity = id(value)
+        if identity in active:
+            raise ValueError("Cannot export circular sampled value.")
+        active.add(identity)
+        try:
+            if is_dataclass(value):
+                dataclass_result: dict[str, Any] = {}
+                for field in fields(value):
+                    if not include_values and (
+                        field.name == "top_values"
+                        or (isinstance(value, CategoricalContext) and field.name == "values")
+                    ):
+                        dataclass_result[field.name] = []
+                    else:
+                        dataclass_result[field.name] = _normalize(
+                            getattr(value, field.name),
+                            include_values,
+                            evidence_details=(type(value).__name__ == "Evidence" and field.name == "details"),
+                            seen=active,
+                        )
+                return dataclass_result
+            if isinstance(value, Mapping):
+                mapping_result: dict[str, Any] = {}
+                for key, item in value.items():
+                    if evidence_details and not include_values and isinstance(item, str):
+                        continue
+                    if (
+                        evidence_details
+                        and not include_values
+                        and isinstance(item, (tuple, list))
+                        and any(isinstance(v, str) for v in item)
+                    ):
+                        continue
+                    mapping_result[str(key)] = _normalize(
+                        item,
+                        include_values,
+                        evidence_details=evidence_details,
+                        seen=active,
+                    )
+                return mapping_result
+            return [
+                _normalize(v, include_values, evidence_details=evidence_details, seen=active)
+                for v in value
+            ]
+        finally:
+            active.remove(identity)
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if hasattr(value, "item"):
         try:
-            return _normalize(value.item(), include_values, evidence_details=evidence_details)
+            scalar = value.item()
         except (ValueError, TypeError):
             pass
+        else:
+            return _normalize(scalar, include_values, evidence_details=evidence_details, seen=active)
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if value is None or isinstance(value, (str, int, float, bool)):
