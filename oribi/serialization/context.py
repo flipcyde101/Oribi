@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from datetime import date, datetime
 from numbers import Number
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, SupportsInt
 
 from .aggregations import aggregation_conditions
 from .categories import format_categories
@@ -212,7 +212,7 @@ def _format_range_value(value: Any) -> str:
         return str(value)
     if isinstance(value, date):
         return value.isoformat()
-    if isinstance(value, Number) and not isinstance(value, (bool, complex)):
+    if isinstance(value, Number) and isinstance(value, SupportsInt) and not isinstance(value, (bool, complex)):
         try:
             integer = int(value)
             if value == integer:
@@ -293,12 +293,12 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
         operations = _format_aggregations(rec.operation for rec in aggregations)
         conditions = aggregation_conditions(aggregations, col.semantic.role)
         aggregation_line = f"Aggregations: {operations}{conditions}"
-        basis = list(dict.fromkeys(
+        agg_basis = list(dict.fromkeys(
             " ".join(evidence.statement.split())
             for rec in aggregations for evidence in rec.evidence
         ))
-        if basis:
-            fields.append(_OptionalText(aggregation_line, evidence=f"\nAggregation basis: {' · '.join(basis[:2])}"))
+        if agg_basis:
+            fields.append(_OptionalText(aggregation_line, evidence=f"\nAggregation basis: {' · '.join(agg_basis[:2])}"))
         else:
             fields.append(aggregation_line)
         useful = [

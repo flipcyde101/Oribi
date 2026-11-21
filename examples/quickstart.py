@@ -4,7 +4,6 @@ import pandas as pd
 
 from oribi import inspect
 
-
 orders = pd.DataFrame(
     {
         "order_id": [101, 101, 102, 102],

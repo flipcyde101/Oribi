@@ -2,10 +2,9 @@ import json
 from dataclasses import replace
 
 import pandas as pd
-
 import pytest
 
-from oribi import inspect, ProfileOptions
+from oribi import ProfileOptions, inspect
 from oribi.models.evidence import CategoricalContext
 from oribi.serialization.context import _format_aggregations, _format_range_value
 
@@ -283,8 +282,9 @@ def test_markdown_renders_column_names_as_literal_text():
 
 def test_compact_context_preserves_timezone_offset_on_midnight_ranges():
     """Timezone-aware midnight bounds keep time and offset; naive still date-only."""
+    from datetime import datetime, timedelta, timezone
+
     import pandas as pd
-    from datetime import datetime, timezone, timedelta
 
     offset = timezone(timedelta(hours=5, minutes=30))  # +05:30
     aware = [

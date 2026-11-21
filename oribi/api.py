@@ -9,8 +9,8 @@ from .exceptions import InvalidInputError
 from .models.context import ColumnContext, DatasetContext
 from .models.evidence import CategoricalContext, Warning
 from .models.profile import DatasetProfile, IndexContext
-from .profiling.columns import profile_column
 from .profiling.cardinality import profile_cardinality
+from .profiling.columns import profile_column
 from .profiling.observations import AnalysisSession
 from .profiling.relationships import detect_relationships, infer_column_relationships
 from .profiling.temporal import temporal_gap_warnings

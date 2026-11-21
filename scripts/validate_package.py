@@ -8,9 +8,9 @@ import tarfile
 import tempfile
 import venv
 import zipfile
-import tomllib
 from pathlib import Path
 
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"

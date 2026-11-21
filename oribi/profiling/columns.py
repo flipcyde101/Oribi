@@ -91,11 +91,11 @@ def _top_values(counts: pd.Series, limit: int) -> tuple[tuple[Any, int], ...]:
 
     # There are usually few distinct frequencies even for very wide ties.
     frequencies = counts.value_counts(sort=False).sort_index(ascending=False)
-    cutoff = frequencies.index[frequencies.cumsum().searchsorted(limit)]
+    cutoff = frequencies.index[int(frequencies.cumsum().searchsorted(limit))]
     if cutoff == 0:
         return _top_values(counts[counts > 0], limit)
 
-    ranked = []
+    ranked: list[tuple[Any, int]] = []
     ties = counts.index
     if len(frequencies) > 1:
         leaders = counts[counts > cutoff].sort_values(ascending=False, kind="stable")
@@ -139,10 +139,13 @@ def profile_column(obs: ColumnObservation, row_count: int, top_k: int, include_q
             values["zero_count"] = int((numeric == 0).sum())
             values["negative_count"] = int((numeric < 0).sum())
             if include_quantiles:
-                qs = finite.quantile([.25, .5, .75]) if len(finite) else {}
-                values["quantiles"] = {str(q): finite_or_none(v) for q, v in qs.items()}
+                values["quantiles"] = (
+                    {str(q): finite_or_none(v) for q, v in finite.quantile([.25, .5, .75]).items()}
+                    if len(finite) else {}
+                )
             if len(finite) >= 3 and finite.nunique() > 1:
-                skew = float(finite.skew())
+                skew_raw: Any = finite.skew()
+                skew = float(skew_raw)
                 values["skewness"] = skew if pd.notna(skew) else None
     elif obs.logical_type == "temporal" and len(non_null):
         values["minimum"] = non_null.min()

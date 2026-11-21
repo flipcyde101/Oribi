@@ -1,10 +1,12 @@
 """Candidate-key collection and separate grain selection."""
 
+from collections.abc import Mapping
 from itertools import combinations
 
 import pandas as pd
 
 from ..models.evidence import Evidence, GrainContext, KeyCandidate
+from ..models.profile import StatisticsContext
 
 _MIN_SINGLE_UNIQUENESS = 0.98
 _MAX_SINGLE_MISSING_RATE = 0.02
@@ -16,7 +18,7 @@ _COMPOSITE_ROLES = _SINGLE_KEY_ROLES | {"temporal"}
 def detect_candidate_keys(
     frame: pd.DataFrame,
     names: list[str],
-    stats: dict[str, object],
+    stats: Mapping[str, StatisticsContext],
     roles: dict[str, str],
     max_columns: int = 8,
     max_exact_rows: int = 100_000,
@@ -148,7 +150,7 @@ def select_grain(
     best = min(
         pool,
         key=lambda candidate: (
-            sum(role_cost.get(roles.get(name), 4) for name in candidate.columns) if roles else 0,
+            sum(role_cost.get(roles.get(name, ""), 4) for name in candidate.columns) if roles else 0,
             -candidate.uniqueness_rate,
             -candidate.confidence,
             candidate.columns,
@@ -161,7 +163,7 @@ def select_grain(
 def detect_keys(
     frame: pd.DataFrame,
     names: list[str],
-    stats: dict[str, object],
+    stats: Mapping[str, StatisticsContext],
     roles: dict[str, str],
     max_columns: int = 8,
     max_exact_rows: int = 100_000,

@@ -3,7 +3,17 @@
 from dataclasses import dataclass
 from typing import Any
 
-from .evidence import CardinalityContext, CategoricalContext, ColumnRelationshipContext, GrainContext, KeyCandidate, Recommendation, RelationshipContext, SemanticContext, Warning
+from .evidence import (
+    CardinalityContext,
+    CategoricalContext,
+    ColumnRelationshipContext,
+    GrainContext,
+    KeyCandidate,
+    Recommendation,
+    RelationshipContext,
+    SemanticContext,
+    Warning,
+)
 from .profile import DatasetProfile, StatisticsContext
 
 

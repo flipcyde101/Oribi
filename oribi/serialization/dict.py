@@ -12,7 +12,7 @@ from ..models.evidence import CategoricalContext
 
 def _normalize(value: Any, include_values: bool = False, *, evidence_details: bool = False) -> Any:
     if is_dataclass(value):
-        result = {}
+        result: dict[str, Any] = {}
         for field in fields(value):
             if not include_values and (
                 field.name == "top_values"

@@ -3,7 +3,7 @@
 import re
 
 from ..models.evidence import Evidence, SemanticContext
-
+from ..models.profile import StatisticsContext
 
 _MIN_ROLE_SCORE = 0.55
 _AMBIGUITY_MARGIN = 0.12
@@ -33,7 +33,7 @@ def column_name_words(name: str) -> list[str]:
 def infer_semantic(
     name: str,
     logical_type: str,
-    stats: object,
+    stats: StatisticsContext,
     row_count: int,
     *,
     is_float: bool = False,

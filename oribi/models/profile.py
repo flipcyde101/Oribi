@@ -1,7 +1,7 @@
 """Observed dataset and column statistics."""
 
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field
-from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
@@ -40,7 +40,7 @@ class DatasetProfile:
 
 @dataclass(frozen=True)
 class IndexContext:
-    names: tuple[str | None, ...]
+    names: tuple[Hashable, ...]
     dtypes: tuple[str, ...]
     level_count: int
     unique_count: int

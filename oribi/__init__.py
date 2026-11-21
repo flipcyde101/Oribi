@@ -4,8 +4,8 @@ from .api import ProfileOptions, inspect
 from .exceptions import InvalidInputError, OribiError
 from .models import (
     CardinalityContext,
-    ColumnRelationshipContext,
     ColumnContext,
+    ColumnRelationshipContext,
     DatasetContext,
     Evidence,
     GrainContext,
