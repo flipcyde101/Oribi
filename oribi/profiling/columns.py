@@ -6,7 +6,7 @@ from decimal import Decimal
 from fractions import Fraction
 from heapq import nsmallest
 from itertools import groupby
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -117,7 +117,12 @@ def profile_column(obs: ColumnObservation, row_count: int, top_k: int, include_q
     non_null = s.dropna()
     values: dict[str, Any] = {}
     if obs.logical_type == "numeric" and len(non_null):
-        numeric = pd.to_numeric(non_null, errors="coerce").dropna()
+        numeric_series = (
+            cast(Any, non_null).sparse.to_dense()
+            if isinstance(non_null.dtype, pd.SparseDtype)
+            else non_null
+        )
+        numeric = pd.to_numeric(numeric_series, errors="coerce").dropna()
         if len(numeric):
             def finite_or_none(value: Any) -> float | None:
                 result = float(value)

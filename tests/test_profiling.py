@@ -320,3 +320,38 @@ def test_categorical_high_cardinality_warning_is_unchanged():
     codes = [w.code for w in group.warnings]
     assert "high_cardinality_category" in codes
     assert "high_cardinality_text" not in codes
+
+
+def test_sparse_float_column_profiles_and_preserves_dtype():
+    amount = pd.arrays.SparseArray([0.0, 1.0, 2.0, 3.0])
+    sparse_column = inspect(pd.DataFrame({"amount": amount})).columns[0]
+    dense_column = inspect(pd.DataFrame({"amount": [0.0, 1.0, 2.0, 3.0]})).columns[0]
+
+    assert sparse_column.dtype == str(amount.dtype)
+    assert sparse_column.logical_type == "numeric"
+    assert sparse_column.statistics.mean == 1.5
+    assert sparse_column.statistics.median == 1.5
+    assert sparse_column.statistics == dense_column.statistics
+    assert sparse_column.semantic == dense_column.semantic
+
+
+@pytest.mark.parametrize("values", [
+    pd.arrays.SparseArray([0.0, 1.0, 2.0, 3.0], fill_value=0.0),
+    pd.arrays.SparseArray([0.0, None, 2.0, 3.0]),
+    pd.arrays.SparseArray([0.0, float("nan"), 2.0, 3.0], fill_value=0.0),
+    pd.arrays.SparseArray([0, 1, 2, 3]),
+    pd.arrays.SparseArray([1, -2, 1, 4, 1], fill_value=1),
+    pd.arrays.SparseArray([0.0, float("inf"), 2.0, 3.0], fill_value=0.0),
+    pd.Series([0.0, 1.0, 2.0, 3.0], dtype="float64"),
+    pd.Series([0, 1, 2, 3], dtype="int64"),
+])
+def test_sparse_and_dense_numeric_columns_match_dense_statistics(values):
+    series = pd.Series(values)
+    dense_series = series.sparse.to_dense() if isinstance(series.dtype, pd.SparseDtype) else series
+    actual = inspect(pd.DataFrame({"amount": series})).columns[0]
+    expected = inspect(pd.DataFrame({"amount": dense_series})).columns[0]
+
+    assert actual.dtype == str(series.dtype)
+    assert actual.logical_type == "numeric"
+    assert actual.statistics == expected.statistics
+    assert actual.semantic == expected.semantic
