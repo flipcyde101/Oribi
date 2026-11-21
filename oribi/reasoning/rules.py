@@ -42,7 +42,16 @@ def reason_column(name: str, logical_type: str, semantic: SemanticContext, stats
         recommendations.append(Recommendation("MIN", "valid", "MIN is valid for observing lower bounds across observations.", semantic.evidence))
         recommendations.append(Recommendation("MAX", "valid", "MAX is valid for observing upper bounds across observations.", semantic.evidence))
         if stats.skewness is not None and abs(stats.skewness) >= 2:
-            warnings.append(Warning("high_skew", "low", "Highly skewed measure", f"{name} has skewness {stats.skewness:.2f}.", (Evidence("skewness", "Observed distribution is strongly skewed", {"skewness": stats.skewness}),), "The mean may be sensitive to a small number of large values.", "Consider reporting the median alongside the mean."))
+            tail = "small values" if stats.skewness < 0 else "large values"
+            warnings.append(Warning(
+                "high_skew",
+                "low",
+                "Highly skewed measure",
+                f"{name} has skewness {stats.skewness:.2f}.",
+                (Evidence("skewness", "Observed distribution is strongly skewed", {"skewness": stats.skewness}),),
+                f"The mean may be sensitive to a small number of {tail}.",
+                "Consider reporting the median alongside the mean.",
+            ))
         if stats.negative_count:
             warnings.append(Warning("negative_measure_values", "low", f"Negative values in {name}", f"{stats.negative_count} negative values were observed in likely measure {name}.", (Evidence("negative_count", f"{stats.negative_count} values are below zero", {"negative_count": stats.negative_count}),), "Negative values may represent refunds, reversals, or data issues.", "Check domain meaning before filtering negative values."))
     elif semantic.role == "dimension" and not high_cardinality_text:

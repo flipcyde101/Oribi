@@ -113,6 +113,23 @@ def test_negative_and_skewed_measures_retain_cautions():
     assert "domain" in neg_warning.recommendation.lower() or "meaning" in neg_warning.recommendation.lower()
 
 
+@pytest.mark.parametrize(("sign", "tail"), [(1, "small values"), (-1, "large values")])
+def test_high_skew_warning_describes_the_observed_tail(sign, tail):
+    values = [sign * value for value in [-100.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0]]
+    context = inspect(pd.DataFrame({"amount": values}))
+
+    warning = next(w for w in context.warnings if w.code == "high_skew")
+    assert tail in warning.implication
+    assert warning.severity == "low"
+    assert "median" in warning.recommendation.lower()
+
+
+def test_symmetric_measure_has_no_high_skew_warning():
+    context = inspect(pd.DataFrame({"amount": [10.5, 20.5, 30.5, 40.5, 50.5]}))
+    assert context.columns[0].semantic.role == "measure"
+    assert all(w.code != "high_skew" for w in context.warnings)
+
+
 def test_categorical_and_dimension_columns_do_not_receive_numeric_aggregations():
     frame = pd.DataFrame({
         "category": pd.Categorical(["A", "B", "A", "C"]),

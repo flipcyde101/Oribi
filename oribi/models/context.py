@@ -41,6 +41,13 @@ class DatasetContext:
     warnings: tuple[Warning, ...] = ()
     schema_version: str = "2"
 
+    def get_column(self, name: str) -> ColumnContext:
+        """Return the profiled column with the exact given name."""
+        for column in self.columns:
+            if column.name == name:
+                return column
+        raise KeyError(name)
+
     def to_dict(self, *, include_values: bool = False) -> dict[str, Any]:
         from ..serialization.dict import to_dict
         return to_dict(self, include_values=include_values)
