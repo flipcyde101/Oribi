@@ -12,14 +12,14 @@ from .categories import format_categories
 class _OptionalText(NamedTuple):
     text: str
     evidence: str = ""
-    categories: str = ""
+    values: str = ""
 
 
 _ContextLine = str | _OptionalText
 
 
 def _render_with_evidence(sections: Sequence[Sequence[_ContextLine]], max_chars: int) -> str | None:
-    """Allocate space to required text, evidence, then optional category values."""
+    """Allocate space to required text, evidence, then optional value details."""
     lines: list[_ContextLine] = []
     for section in sections:
         if lines:
@@ -31,7 +31,7 @@ def _render_with_evidence(sections: Sequence[Sequence[_ContextLine]], max_chars:
         return None
 
     rendered: list[str] = []
-    category_lines: list[tuple[int, str]] = []
+    value_lines: list[tuple[int, str]] = []
     for line in lines:
         if isinstance(line, str):
             rendered.append(line)
@@ -40,13 +40,13 @@ def _render_with_evidence(sections: Sequence[Sequence[_ContextLine]], max_chars:
             if len(line.evidence) <= available:
                 text += line.evidence
                 available -= len(line.evidence)
-            if line.categories:
-                category_lines.append((len(rendered), line.categories))
+            if line.values:
+                value_lines.append((len(rendered), line.values))
             rendered.append(text)
-    for index, categories in category_lines:
-        if len(categories) <= available:
-            rendered[index] += categories
-            available -= len(categories)
+    for index, values in value_lines:
+        if len(values) <= available:
+            rendered[index] += values
+            available -= len(values)
     return "\n".join(rendered)
 
 
@@ -321,12 +321,14 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
                 operations_line = f"{operations_line} | {inappropriate_line}" if operations_line else inappropriate_line
             guidance.append((bool(inappropriate) or any(rec.disposition == "caution" for rec in aggregations),
                              f"- {col.name}: {operations_line}"))
+        optional_values = ""
         if include_values and col.categories is not None:
-            last = fields[-1]
-            categories = "\n" + format_categories(col.categories, s.distinct_count)
-            fields[-1] = _OptionalText(last, categories=categories) if isinstance(last, str) else last._replace(categories=categories)
+            optional_values = "\n" + format_categories(col.categories, s.distinct_count)
         elif include_values and s.top_values:
-            fields.append("Local value samples: " + ", ".join(f"{v} ({n})" for v, n in s.top_values))
+            optional_values = "\nLocal value samples: " + ", ".join(f"{v} ({n})" for v, n in s.top_values)
+        if optional_values:
+            last = fields[-1]
+            fields[-1] = _OptionalText(last, values=optional_values) if isinstance(last, str) else last._replace(values=optional_values)
         column_lines.extend(fields)
 
     sections: list[Sequence[_ContextLine]] = [header, grain_lines]

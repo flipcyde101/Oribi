@@ -427,3 +427,65 @@ def test_text_category_values_distinguish_types_and_render_once():
         assert ': 1 (2), " a, b " (2), "1" (2)' in categories
         assert "north" in categories and "west" in categories
         assert "Local value samples:" not in rendered
+
+
+def test_compact_context_omits_oversized_local_samples_before_truncating():
+    ids = [f"id-{i}-" + "x" * 3000 for i in range(10)]
+    context = inspect(pd.DataFrame({"customer_id": ids}))
+
+    default_ctx = context.to_context(max_chars=1600)
+    opt_in_ctx = context.to_context(max_chars=1600, include_values=True)
+
+    assert len(default_ctx) <= 1600
+    assert len(opt_in_ctx) <= 1600
+    assert "[Context truncated.]" not in default_ctx
+    assert "[Context truncated.]" not in opt_in_ctx
+    assert "Local value samples:" not in default_ctx
+    assert "Local value samples:" not in opt_in_ctx
+    assert opt_in_ctx == default_ctx
+    assert "RELATIONSHIPS" in opt_in_ctx
+    assert "CARDINALITY" in opt_in_ctx
+
+    over_budget = context.to_context(max_chars=250, include_values=True)
+    assert len(over_budget) <= 250
+    assert over_budget.endswith("[Context truncated.]")
+
+
+def test_compact_context_includes_short_local_samples_when_budget_allows():
+    ids = [f"id-{i}" for i in range(5)]
+    context = inspect(pd.DataFrame({"customer_id": ids}))
+
+    default_ctx = context.to_context(max_chars=1600)
+    assert "Local value samples:" not in default_ctx
+
+    with_samples = context.to_context(max_chars=1600, include_values=True)
+    assert "[Context truncated.]" not in with_samples
+    assert "Local value samples: " in with_samples
+    assert "id-0 (1)" in with_samples
+
+    exact_fit = context.to_context(max_chars=len(with_samples), include_values=True)
+    assert exact_fit == with_samples
+    assert len(exact_fit) <= len(with_samples)
+
+    one_char_short = context.to_context(max_chars=len(with_samples) - 1, include_values=True)
+    assert len(one_char_short) <= len(with_samples) - 1
+    assert "[Context truncated.]" not in one_char_short
+    assert "Local value samples:" not in one_char_short
+    assert one_char_short == default_ctx
+
+
+def test_compact_context_omits_oversized_sample_while_keeping_short_sample():
+    context = inspect(
+        pd.DataFrame(
+            {
+                "long_id": [f"long-{i}-" + "x" * 2000 for i in range(5)],
+                "short_id": [f"s-{i}" for i in range(5)],
+            }
+        )
+    )
+
+    rendered = context.to_context(max_chars=2400, include_values=True)
+    assert len(rendered) <= 2400
+    assert "[Context truncated.]" not in rendered
+    assert "long-0-" not in rendered
+    assert "Local value samples: s-0 (1)" in rendered
