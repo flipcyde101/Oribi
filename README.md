@@ -32,21 +32,23 @@ print(context.summary())
 print(context.to_context(max_chars=2_000))
 ```
 
-`summary()` gives you a readable overview. `to_context()` creates a compact representation that you can include in an AI prompt.
+`summary()` returns the row and column counts. It also reports a non-zero duplicate-row count, whether a likely grain was estimated or left undetermined, and the warning count when warnings were recorded. It takes no arguments and does not list column values. `to_context()` creates a compact representation that you can include in an AI prompt.
 
 ## What Oribi reports
 
-Oribi records measurements from the DataFrame and keeps its interpretations tied to evidence.
+The capabilities in this section are implemented in the current release. Oribi records measurements from the DataFrame and keeps its interpretations tied to evidence. Work that is not implemented is listed under [Roadmap](#roadmap).
 
 | Area | What it reports |
 | --- | --- |
-| Dataset | Row and column counts, duplicate rows, and index information |
-| Columns | Missingness, distinct counts, numeric summaries, categorical top values, and datetime bounds |
+| Dataset | Row and column counts, duplicate rows when pandas can compare them, and index information |
+| Columns | Missingness, distinct counts, per-column cardinality, numeric summaries, categorical top values, and datetime bounds |
 | Semantic roles | Likely identifiers, measures, dimensions, categories, temporal fields, booleans, text, or unknown columns |
-| Keys and grain | Candidate single- and two column keys, plus an estimate of what one row may represent |
-| Relationships | Cardinality and observed value relationships within the DataFrame |
-| Analysis guidance | Recommendations for likely measures and identifier counts |
-| Warnings | Duplicate rows, missingness, non unique identifiers, negative or skewed measures, high cardinality categories, and possible gaps in regular datetime series |
+| Keys and grain | Candidate single- and two-column keys, plus an estimate of what one row may represent |
+| Relationships | Observed value relationships within the same DataFrame |
+| Analysis guidance | Aggregation recommendations for likely measures, identifier counts, dimensions, and categories |
+| Warnings | Duplicate rows, missingness, non-unique identifiers, negative or highly skewed measures, high-cardinality categories and text, and possible gaps in regular datetime series |
+
+A dimension role is a current inference for reusable low-cardinality values, including some numeric columns. A temporal-gap warning is also current, and only when a datetime column supports a regular cadence. Oribi does not flag individual outlier rows.
 
 A role, key, relationship, or grain estimate is an **inference**, not a guarantee about business meaning. Oribi includes evidence so an analyst or downstream system can judge how much to trust each result.
 
@@ -69,7 +71,7 @@ json_text = context.to_json()
 prompt_context = context.to_context(max_chars=8_000)
 ```
 
-Each method renders the same profile. The serializers do not re read the DataFrame or run new inferences.
+`summary()` is that short overview and accepts no options. `to_markdown()`, `to_dict()`, `to_json()`, and `to_context()` render the same computed profile. Those serializers do not re-read the DataFrame or run new inferences.
 
 ## Data handling
 
@@ -77,7 +79,7 @@ Oribi profiles the DataFrame in memory and does not keep a reference to it in th
 
 Top values are ranked by frequency using pandas equality and counts. Ties use a stable value order for supported types, including strings, built-in numbers, and common date and time values. Tied opaque objects without a stable value key follow pandas count order, so reordering rows or categories can change which of them appears at the cutoff. Profiling does not call their `repr()` to rank them.
 
-By default, `to_dict`, `to_json`, `to_markdown`, and `to_context` omit sampled cell values and exact bounds. Dictionary and JSON exports retain top frequency counts and omit strings in evidence details. They also omit means, medians, standard deviations, skewness, and quantiles when fewer than three non-missing values were observed.
+`to_dict`, `to_json`, `to_markdown`, and `to_context` accept `include_values`. `summary()` does not. With the default `include_values=False`, those four exports omit sampled cell values and exact bounds. Dictionary and JSON exports still keep `top_frequencies` (the counts, without the sampled values) and omit strings in evidence details. They also omit means, medians, standard deviations, skewness, and quantiles when fewer than three non-missing values were observed.
 
 You can explicitly include local values and bounds when exporting:
 
@@ -85,7 +87,7 @@ You can explicitly include local values and bounds when exporting:
 json_text = context.to_json(include_values=True)
 ```
 
-The other export methods accept the same option. Treat opt-in output as containing raw data details. Column and index names and aggregates can disclose information, so review context before sharing it, especially when the source is sensitive.
+`to_dict`, `to_markdown`, and `to_context` accept the same `include_values` option. `summary()` takes no arguments and never includes sampled values. Treat opt-in output as containing raw data details. Column and index names and aggregates can disclose information, so review context before sharing it, especially when the source is sensitive.
 
 Opt-in text reports quote string category labels to distinguish them from numeric values. Compact reports include category lists when space remains after analytical guidance and evidence.
 
@@ -136,6 +138,7 @@ Oribi currently works with in memory pandas DataFrames. It does not connect to d
 - Datetime like text is not parsed automatically.
 - Native complex valued columns are unsupported and raise `InvalidInputError`.
 - Profiling may require several full column scans. Exact composite key and relationship checks are bounded by configured row and column limits.
+- If pandas cannot compare cell values, the duplicate-row count is omitted and Oribi records a `duplicate_check_unavailable` warning.
 
 ## Development
 
@@ -154,8 +157,9 @@ source .venv/bin/activate
 # .venv\Scripts\Activate.ps1
 
 python -m pip install -e ".[dev]"
-pytest -q
-python -m build
+pytest
+ruff check .
+mypy oribi
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [DESIGN.md](DESIGN.md) for architecture notes. To run the end to end example:
@@ -172,7 +176,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for release steps and repository setup.
 
 ## Roadmap
 
-The current release focuses on pandas DataFrames and deterministic, evidence-bearing heuristics. Additional data sources, configurable semantic rules, cross-table foreign-key analysis, and richer profiling options are future work.
+These items are not implemented. They are not part of the current profiling, reasoning, or serialization behavior.
+
+- Outlier or anomaly detection. A high-skew warning on a likely measure says the mean may be sensitive to large values. It does not flag individual outlier rows.
+- Automatic parsing of datetime-like text.
+- Connections to databases or other remote data sources.
+- An AI provider integration.
+- User-configurable semantic rules.
+- Cross-table foreign-key analysis. Relationships stay inside one DataFrame.
+- Profiling options beyond the `ProfileOptions` fields documented above.
+
+The current release is the in-memory pandas profile in [What Oribi reports](#what-oribi-reports), including dimension roles and temporal-gap warnings for regular datetime series.
 
 ## License
 
