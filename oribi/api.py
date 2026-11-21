@@ -46,7 +46,7 @@ class ProfileOptions:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Integral):
                 raise ValueError(f"{name} must be an integer")
-        for name, minimum in (("top_k", 1), ("max_exact_rows", 1), ("max_key_columns", 2),
+        for name, minimum in (("top_k", 0), ("max_exact_rows", 1), ("max_key_columns", 2),
                               ("max_relationships", 0), ("max_relationship_columns", 0),
                               ("max_gap_examples", 0), ("max_gap_warnings", 1)):
             if getattr(self, name) < minimum:

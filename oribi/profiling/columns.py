@@ -156,7 +156,7 @@ def profile_column(obs: ColumnObservation, row_count: int, top_k: int, include_q
         values["minimum"] = non_null.min()
         values["maximum"] = non_null.max()
         values["date_range"] = f"{values['minimum']} to {values['maximum']}"
-    if len(non_null) and (obs.logical_type in {"text", "categorical", "boolean", "unknown", "duration"} or obs.distinct_count <= top_k * 4):
+    if top_k > 0 and len(non_null) and (obs.logical_type in {"text", "categorical", "boolean", "unknown", "duration"} or obs.distinct_count <= top_k * 4):
         try:
             counts = non_null.value_counts(sort=False, dropna=True)
         except (TypeError, ValueError):

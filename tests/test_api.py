@@ -53,7 +53,7 @@ def test_rejects_invalid_inputs():
     ("max_exact_rows", 1.5), ("max_key_columns", False),
     ("max_relationships", 2.5), ("max_relationship_columns", "4"),
     ("max_gap_examples", True), ("max_gap_warnings", 1.5),
-    ("top_k", 0), ("max_exact_rows", 0), ("max_key_columns", 1),
+    ("top_k", -1), ("max_exact_rows", 0), ("max_key_columns", 1),
     ("max_relationships", -1), ("max_relationship_columns", -1),
     ("max_gap_examples", -1), ("max_gap_warnings", 0),
 ])
@@ -63,10 +63,10 @@ def test_invalid_integer_options_raise_at_configuration_time(name, value):
 
 
 def test_valid_option_boundaries_and_defaults():
-    options = ProfileOptions(top_k=1, max_exact_rows=1, max_key_columns=2,
+    options = ProfileOptions(top_k=0, max_exact_rows=1, max_key_columns=2,
                              max_relationships=0, max_relationship_columns=0,
                              max_gap_examples=0, max_gap_warnings=1)
-    assert options.top_k == 1
+    assert options.top_k == 0
     assert ProfileOptions().max_gap_warnings == 10
     assert ProfileOptions(top_k=pd.Series([2]).iloc[0]).top_k == 2
 
@@ -148,3 +148,54 @@ def test_categorical_context_not_populated_when_values_unknown():
     assert by_name["skipped_int_dim"].semantic.role == "dimension"
     assert by_name["skipped_int_dim"].statistics.top_values == ()
     assert by_name["skipped_int_dim"].categories is None
+
+
+def test_top_k_zero_disables_top_value_sampling_and_preserves_other_stats():
+    frame = pd.DataFrame({
+        "status": pd.Categorical(["open", "closed", "open", "pending", None]),
+        "region": ["north", "south", "east", "north", "south"],
+        "active": [True, False, True, True, None],
+        "amount": [-5.0, 0.0, 10.5, 20.0, None],
+        "tier": [1, 2, 1, 2, 1],
+    })
+    default = inspect(frame)
+    disabled = inspect(frame, options=ProfileOptions(top_k=0))
+    limited = inspect(frame, options=ProfileOptions(top_k=2))
+
+    default_by_name = {col.name: col for col in default.columns}
+    disabled_by_name = {col.name: col for col in disabled.columns}
+    limited_by_name = {col.name: col for col in limited.columns}
+
+    for name, default_col in default_by_name.items():
+        disabled_col = disabled_by_name[name]
+        assert disabled_col.statistics.top_values == ()
+        assert disabled_col.statistics.top_frequencies == ()
+        assert disabled_col.categories is None
+        assert disabled_col.statistics.distinct_count == default_col.statistics.distinct_count
+        assert disabled_col.statistics.distinct_rate == default_col.statistics.distinct_rate
+        assert disabled_col.statistics.missing_count == default_col.statistics.missing_count
+        assert disabled_col.statistics.missing_rate == default_col.statistics.missing_rate
+
+    for numeric_name in ("amount", "tier"):
+        default_stats = default_by_name[numeric_name].statistics
+        disabled_stats = disabled_by_name[numeric_name].statistics
+        assert disabled_stats.minimum == default_stats.minimum
+        assert disabled_stats.maximum == default_stats.maximum
+        assert disabled_stats.mean == default_stats.mean
+        assert disabled_stats.median == default_stats.median
+        assert disabled_stats.standard_deviation == default_stats.standard_deviation
+        assert disabled_stats.quantiles == default_stats.quantiles
+        assert disabled_stats.skewness == default_stats.skewness
+        assert disabled_stats.zero_count == default_stats.zero_count
+        assert disabled_stats.negative_count == default_stats.negative_count
+
+    limited_status = limited_by_name["status"]
+    assert limited_status.statistics.top_values == (("open", 2), ("closed", 1))
+    assert limited_status.statistics.top_frequencies == (2, 1)
+    assert limited_status.categories is not None
+    assert limited_status.categories.is_complete is False
+
+    limited_region = limited_by_name["region"]
+    assert len(limited_region.statistics.top_values) == 2
+    assert len(limited_region.statistics.top_frequencies) == 2
+    assert limited_region.categories is not None
