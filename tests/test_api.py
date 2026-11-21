@@ -1,9 +1,10 @@
 import math
+from dataclasses import replace
 
 import pandas as pd
 import pytest
 
-from oribi import ProfileOptions, StatisticsContext, inspect
+from oribi import DatasetContext, ProfileOptions, StatisticsContext, inspect
 from oribi.exceptions import InvalidInputError
 
 
@@ -148,3 +149,50 @@ def test_categorical_context_not_populated_when_values_unknown():
     assert by_name["skipped_int_dim"].semantic.role == "dimension"
     assert by_name["skipped_int_dim"].statistics.top_values == ()
     assert by_name["skipped_int_dim"].categories is None
+
+
+def test_get_column_returns_exact_column_and_preserves_order_and_exports(sales_frame):
+    context = inspect(sales_frame)
+    expected_names = tuple(col.name for col in context.columns)
+    expected_dict = context.to_dict()
+
+    revenue = context.get_column("revenue")
+    assert revenue is context.columns[2]
+    assert context.get_column("order_id") is context.columns[0]
+    assert context.get_column("region") is context.columns[4]
+    assert tuple(col.name for col in context.columns) == expected_names
+    assert context.to_dict() == expected_dict
+
+
+@pytest.mark.parametrize("missing_name", ["missing", "Revenue", "REVENUE", " revenue", "revenue ", ""])
+def test_get_column_raises_key_error_for_absent_or_wrong_case_label(sales_frame, missing_name):
+    context = inspect(sales_frame)
+    with pytest.raises(KeyError) as exc_info:
+        context.get_column(missing_name)
+    assert exc_info.value.args == (missing_name,)
+
+
+def test_get_column_handles_special_column_names():
+    frame = pd.DataFrame({
+        "": [1, 2],
+        "gross revenue ($)": [10.0, 20.0],
+        "café": ["a", "b"],
+        "line\nbreak": [True, False],
+    })
+    context = inspect(frame)
+    for expected in context.columns:
+        assert context.get_column(expected.name) is expected
+
+
+def test_get_column_returns_first_match_for_duplicate_names_and_handles_empty(sales_frame):
+    base = inspect(sales_frame)
+    first = base.columns[0]
+    second = base.columns[1]
+    later_duplicate = replace(first, dtype="duplicate_dtype")
+    duplicate = DatasetContext(profile=base.profile, columns=(first, second, later_duplicate))
+    assert duplicate.get_column(first.name) is first
+
+    empty = DatasetContext(profile=base.profile, columns=())
+    with pytest.raises(KeyError) as exc_info:
+        empty.get_column("revenue")
+    assert exc_info.value.args == ("revenue",)
