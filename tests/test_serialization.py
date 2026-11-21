@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -427,3 +428,48 @@ def test_text_category_values_distinguish_types_and_render_once():
         assert ': 1 (2), " a, b " (2), "1" (2)' in categories
         assert "north" in categories and "west" in categories
         assert "Local value samples:" not in rendered
+
+
+@pytest.mark.parametrize(
+    "invalid_max_chars",
+    [
+        "100",
+        "200",
+        True,
+        False,
+        np.bool_(True),
+        100.5,
+        100.0,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        None,
+    ],
+)
+def test_to_context_rejects_non_integer_max_chars(invalid_max_chars):
+    context = inspect(pd.DataFrame({"region": ["east", "west", "east"]}))
+    with pytest.raises(ValueError, match="max_chars must be an integer"):
+        context.to_context(max_chars=invalid_max_chars)
+
+
+@pytest.mark.parametrize("too_small", [99, 0, -1, np.int64(99)])
+def test_to_context_rejects_max_chars_below_minimum(too_small):
+    context = inspect(pd.DataFrame({"region": ["east", "west", "east"]}))
+    with pytest.raises(ValueError, match="max_chars must be at least 100"):
+        context.to_context(max_chars=too_small)
+
+
+def test_to_context_accepts_minimum_and_numpy_integer_budgets():
+    context = inspect(pd.DataFrame({"region": ["east", "west", "east"]}))
+
+    at_minimum = context.to_context(max_chars=100)
+    assert len(at_minimum) <= 100
+    assert "DATASET" in at_minimum
+
+    for numpy_budget, python_budget in (
+        (np.int64(100), 100),
+        (np.uint8(100), 100),
+        (np.int32(500), 500),
+        (np.int64(8000), 8000),
+    ):
+        assert context.to_context(max_chars=numpy_budget) == context.to_context(max_chars=python_budget)
