@@ -296,6 +296,10 @@ def detect_relationships(
     def distinct_count(name: str) -> int:
         return _nunique(frame[name])
 
+    @cache
+    def non_null_count(name: str) -> int:
+        return int(frame[name].notna().sum())
+
     def rank(name: str) -> tuple[int, str]:
         return distinct_count(name), name
 
@@ -309,7 +313,7 @@ def detect_relationships(
             continue
         eligible_targets.append(name)
         if role in {"identifier", "dimension", "categorical", "boolean", "text", "temporal"}:
-            observed = int(frame[name].notna().sum())
+            observed = non_null_count(name)
             # A unique determinant maps trivially to every row-level value.
             if column_distinct < observed:
                 source_observed_counts[name] = observed
@@ -413,8 +417,13 @@ def detect_relationships(
             or (grain is not None and key.columns[0] in grain.columns)
         )
     ]
+    # A group needs multiple distinct values and at least one reused value.
     eligible_groups = sorted(
-        (name for name, role in roles.items() if role in {"identifier", "dimension", "categorical", "boolean"}),
+        (
+            name for name, role in roles.items()
+            if role in {"identifier", "dimension", "categorical", "boolean"}
+            and 2 <= distinct_count(name) < non_null_count(name)
+        ),
         key=lambda name: (roles[name] != "identifier", rank(name)),
     )[:search_columns]
     for entity in sorted(single_keys)[:search_columns]:

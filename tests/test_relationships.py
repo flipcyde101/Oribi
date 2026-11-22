@@ -154,6 +154,76 @@ def test_complete_entity_key_establishes_exact_one_to_many():
                and rel.target_column == "order_id" for rel in context.relationships)
 
 
+@pytest.mark.parametrize("column_limit", [1, 2])
+@pytest.mark.parametrize("with_constant", [False, True])
+def test_one_to_many_group_budget_skips_constants_and_unique_entity_keys(column_limit, with_constant):
+    frame = pd.DataFrame({"group": ["a", "a", "b", "b"], "item_id": [1, 2, 3, 4]})
+    if with_constant:
+        frame = frame.assign(const_a="x")
+
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=column_limit))
+    assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
+        ("group", "item_id", "one_to_many"),
+    ]
+
+
+def test_one_to_many_group_budget_skips_sparse_unique_identifiers():
+    frame = pd.DataFrame({
+        "customer_id": [f"c{i // 3}" for i in range(12)],
+        "order_id": [f"o{i}" for i in range(12)],
+        "sparse_id": ["s1", "s2"] + [None] * 10,
+    })
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=1))
+
+    assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
+        ("customer_id", "order_id", "one_to_many"),
+    ]
+
+
+def test_one_to_many_keeps_multiple_verified_entity_keys_within_budget():
+    frame = pd.DataFrame({
+        "region": ["east", "east", "west", "west"],
+        "order_id": [1, 2, 3, 4],
+        "invoice_id": [101, 102, 103, 104],
+    })
+
+    for column_limit, entities in [(1, ["invoice_id"]), (2, ["invoice_id", "order_id"])]:
+        context = inspect(frame, options=ProfileOptions(max_relationship_columns=column_limit))
+        assert {key.columns for key in context.candidate_keys if key.verified_unique} == {
+            ("invoice_id",), ("order_id",),
+        }
+        assert [
+            (rel.source_column, rel.target_column, rel.kind) for rel in context.relationships
+        ] == [("region", entity, "one_to_many") for entity in entities]
+
+
+def test_one_to_many_group_budget_still_prefers_reused_identifiers():
+    frame = pd.DataFrame({
+        "region": ["east", "east", "east", "west", "west", "west"],
+        "customer_id": ["c0", "c0", "c1", "c1", "c2", "c2"],
+        "order_id": [1, 2, 3, 4, 5, 6],
+    })
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=1))
+
+    assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
+        ("customer_id", "order_id", "one_to_many"),
+    ]
+
+
+def test_one_to_many_accepts_reused_groups_above_directional_distinct_limit():
+    frame = pd.DataFrame({
+        "customer_id": [f"c{i // 2}" for i in range(1002)],
+        "order_id": [f"o{i}" for i in range(1002)],
+    })
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=1))
+
+    (relation,) = context.relationships
+    assert (relation.source_column, relation.target_column, relation.kind) == (
+        "customer_id", "order_id", "one_to_many",
+    )
+    assert relation.evidence[0].details["group_distinct"] == 501
+
+
 def test_unique_id_names_do_not_create_foreign_key_claims_without_group_evidence():
     frame = pd.DataFrame({
         "customer_id": [f"c{i}" for i in range(30)],
