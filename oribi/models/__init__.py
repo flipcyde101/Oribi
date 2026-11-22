@@ -7,6 +7,7 @@ from .evidence import (
     Evidence,
     GrainContext,
     KeyCandidate,
+    MetricDefinition,
     Recommendation,
     RelationshipContext,
     SemanticContext,
@@ -14,4 +15,4 @@ from .evidence import (
 )
 from .profile import StatisticsContext
 
-__all__ = ["CardinalityContext", "ColumnContext", "ColumnRelationshipContext", "DatasetContext", "Evidence", "GrainContext", "KeyCandidate", "Recommendation", "RelationshipContext", "SemanticContext", "StatisticsContext", "Warning"]
+__all__ = ["CardinalityContext", "ColumnContext", "ColumnRelationshipContext", "DatasetContext", "Evidence", "GrainContext", "KeyCandidate", "MetricDefinition", "Recommendation", "RelationshipContext", "SemanticContext", "StatisticsContext", "Warning"]

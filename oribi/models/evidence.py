@@ -142,3 +142,18 @@ class ColumnRelationshipContext:
         if self.semantic_confidence is None:
             object.__setattr__(self, "semantic_confidence", self.confidence)
         object.__setattr__(self, "confidence_components", _freeze(self.confidence_components))
+
+
+@dataclass(frozen=True)
+class MetricDefinition:
+    """Inferred analytical metric with a conservative SQL definition and evidence."""
+
+    name: str
+    label: str
+    kind: str
+    sql: str
+    columns: tuple[str, ...]
+    confidence: float
+    rationale: str
+    evidence: tuple[Evidence, ...] = ()
+    caveats: tuple[str, ...] = ()

@@ -10,6 +10,7 @@ from .models import (
     Evidence,
     GrainContext,
     KeyCandidate,
+    MetricDefinition,
     Recommendation,
     RelationshipContext,
     SemanticContext,
@@ -19,7 +20,7 @@ from .models import (
 
 __all__ = [
     "CardinalityContext", "ColumnContext", "ColumnRelationshipContext", "DatasetContext", "Evidence", "GrainContext", "InvalidInputError",
-    "KeyCandidate", "ProfileOptions", "Recommendation", "RelationshipContext",
+    "KeyCandidate", "MetricDefinition", "ProfileOptions", "Recommendation", "RelationshipContext",
     "OribiError", "SemanticContext", "StatisticsContext", "Warning", "inspect",
 ]
 

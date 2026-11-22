@@ -10,6 +10,7 @@ from .evidence import (
     ColumnRelationshipContext,
     GrainContext,
     KeyCandidate,
+    MetricDefinition,
     Recommendation,
     RelationshipContext,
     SemanticContext,
@@ -41,6 +42,7 @@ class DatasetContext:
     relationships: tuple[RelationshipContext, ...] = ()
     warnings: tuple[Warning, ...] = ()
     schema_version: str = "2"
+    metrics: tuple[MetricDefinition, ...] = ()
 
     def get_column(self, name: str) -> ColumnContext:
         """Return the profiled column with the exact given name."""

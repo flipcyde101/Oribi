@@ -218,6 +218,24 @@ def _cardinality_lines(context: Any) -> list[_ContextLine]:
     return lines if len(lines) > 1 else []
 
 
+def _metric_lines(context: Any) -> list[_ContextLine]:
+    metrics = getattr(context, "metrics", ())
+    if not metrics:
+        return []
+    lines: list[_ContextLine] = ["METRICS"]
+    for metric in metrics:
+        sql = " ".join(metric.sql.splitlines())
+        line = f"- {metric.name} ({metric.confidence:.0%} confidence): {sql}"
+        details = []
+        if metric.rationale:
+            details.append(" ".join(metric.rationale.split()))
+        if metric.caveats:
+            details.append(f"Caveat: {' '.join(metric.caveats[0].split())}")
+        evidence = f" · {' '.join(details)}" if details else ""
+        lines.append(_OptionalText(line, evidence=evidence) if evidence else line)
+    return lines
+
+
 def _format_range_value(value: Any) -> str:
     """Render observed bounds without redundant midnight or decimal suffixes.
 
@@ -369,6 +387,9 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
     cardinality_lines = _cardinality_lines(context)
     if cardinality_lines:
         sections.append(cardinality_lines)
+    metric_lines = _metric_lines(context)
+    if metric_lines:
+        sections.append(metric_lines)
     sections.append(column_lines)
     result = _render_with_evidence(sections, max_chars)
     if result is not None:
@@ -408,6 +429,10 @@ def to_context(context: Any, *, max_chars: int = 8000, include_values: bool = Fa
     add_section("AGGREGATION GUIDANCE", [line for _, line in sorted(guidance, key=lambda item: not item[0])])
     if header[essential_header:]:
         add_section("DATASET DETAILS", header[essential_header:])
+    if metric_lines:
+        add_section("METRICS", [
+            line if isinstance(line, str) else line.text for line in metric_lines[1:10]
+        ])
     if relationship_lines:
         add_section(relationship_lines[0], relationship_lines[1:10])
     if cardinality_lines:

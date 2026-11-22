@@ -16,6 +16,7 @@ from .profiling.observations import AnalysisSession
 from .profiling.relationships import detect_relationships, infer_column_relationships
 from .profiling.temporal import temporal_gap_warnings
 from .reasoning.keys import detect_keys
+from .reasoning.metrics import infer_metrics
 from .reasoning.rules import dataset_warnings, reason_column
 from .reasoning.semantic import infer_semantic
 
@@ -196,6 +197,13 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
             "duplicate_check_unavailable", "low", "Duplicate-row check unavailable",
             "Pandas could not compare rows with the available cell values.",
         ))
+    metrics = infer_metrics(
+        columns,
+        grain=grain,
+        relationships=relationships,
+        row_count=nrows,
+        has_duplicate_rows=bool(duplicates),
+    )
     return DatasetContext(
         profile=DatasetProfile(
             nrows, ncols, duplicates, duplicate_rate, _profile_index(df),
@@ -206,4 +214,5 @@ def inspect(df: pd.DataFrame, *, options: ProfileOptions | None = None) -> Datas
         grain=grain,
         relationships=relationships,
         warnings=tuple(global_warnings),
+        metrics=metrics,
     )

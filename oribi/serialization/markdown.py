@@ -235,6 +235,22 @@ def to_markdown(context: Any, *, include_values: bool = False) -> str:
                 f"{relation.kind}** ({detail})"
             )
 
+    metrics = getattr(context, "metrics", ())
+    if metrics:
+        lines += ["", "## Analytical metrics", ""]
+        for metric in metrics:
+            lines.append(
+                f"- **{_md(metric.label)}** ({_md(metric.name)} · "
+                f"{_md(metric.kind)} · {metric.confidence:.0%} confidence): "
+                f"{_md(metric.sql)}"
+            )
+            if metric.rationale:
+                lines.append(f"  - Rationale: {_md(metric.rationale)}")
+            if metric.evidence:
+                lines.append(f"  - Basis: {_md(metric.evidence[0].statement)}")
+            for caveat in metric.caveats:
+                lines.append(f"  - Caveat: {_md(caveat)}")
+
     lines += ["", "## Columns", ""]
 
     for col in context.columns:
