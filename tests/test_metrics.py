@@ -1,9 +1,11 @@
 import json
+import sqlite3
 
 import pandas as pd
 import pytest
 
-from oribi import MetricDefinition, inspect
+from oribi import MetricDefinition, RelationshipContext, inspect
+from oribi.reasoning.metrics import infer_metrics
 
 
 def _metric(context, name):
@@ -263,3 +265,163 @@ def test_metrics_are_deterministic_across_column_order_and_bounded_on_wide_frame
     wide_context = inspect(pd.DataFrame(wide_data))
     assert len(wide_context.metrics) <= 20
     assert any(m.name == "average_order_value" for m in wide_context.metrics)
+
+
+def _eval_sql(frame: pd.DataFrame, sql: str) -> float:
+    query = sql if sql.lstrip().upper().startswith(("WITH ", "SELECT ")) else f"SELECT {sql} FROM dataset"
+    with sqlite3.connect(":memory:") as conn:
+        frame.to_sql("dataset", conn, index=False, if_exists="replace")
+        row = conn.execute(query).fetchone()
+        assert row is not None and row[0] is not None
+        return float(row[0])
+
+
+def test_repeated_order_totals_across_line_items_deduplicate_aov_total_and_ratios():
+    frame = pd.DataFrame(
+        {
+            "order_id": [101, 101, 102, 102, 103, 103],
+            "product_id": [1, 2, 1, 3, 2, 3],
+            "customer_id": ["c1", "c1", "c1", "c1", "c2", "c2"],
+            "revenue": [50.0, 50.0, 40.0, 40.0, 60.0, 60.0],
+            "quantity": [1, 2, 3, 4, 5, 2],
+        }
+    )
+    context = inspect(frame)
+
+    aov = _metric(context, "average_order_value")
+    assert aov.sql != "SUM(revenue) / NULLIF(COUNT(DISTINCT order_id), 0)"
+    assert "GROUP BY order_id" in aov.sql
+    assert any(e.code == "measure_constant_per_entity" for e in aov.evidence)
+    assert any("double-counting" in c.lower() for c in aov.caveats)
+    assert _eval_sql(frame, aov.sql) == pytest.approx(50.0)
+
+    total_rev = _metric(context, "total_revenue")
+    assert total_rev.sql != "SUM(revenue)"
+    assert _eval_sql(frame, total_rev.sql) == pytest.approx(150.0)
+
+    rpc = _metric(context, "revenue_per_customer")
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(75.0)
+
+    rpu = _metric(context, "revenue_per_unit")
+    assert _eval_sql(frame, rpu.sql) == pytest.approx(150.0 / 17.0)
+
+    total_qty = _metric(context, "total_quantity")
+    assert total_qty.sql == "SUM(quantity)"
+    assert _eval_sql(frame, total_qty.sql) == pytest.approx(17.0)
+
+    opc = _metric(context, "orders_per_customer")
+    assert opc.sql == "1.0 * COUNT(DISTINCT order_id) / NULLIF(COUNT(DISTINCT customer_id), 0)"
+    assert _eval_sql(frame, opc.sql) == pytest.approx(1.5)
+
+
+def test_repeated_integer_order_totals_and_coarser_customer_grain_measures():
+    frame = pd.DataFrame(
+        {
+            "customer_id": ["c1", "c1", "c1", "c1", "c2", "c2", "c2", "c2"],
+            "order_id": [101, 101, 102, 102, 103, 103, 104, 104],
+            "revenue": pd.Series([50, 50, 40, 40, 60, 60, 70, 70], dtype="int64"),
+            "customer_ltv": [100.0, 100.0, 100.0, 100.0, 200.0, 200.0, 200.0, 200.0],
+        }
+    )
+    context = inspect(frame)
+
+    aov = _metric(context, "average_order_value")
+    assert "1.0 *" in aov.sql
+    assert _eval_sql(frame, aov.sql) == pytest.approx(55.0)
+
+    total_ltv = _metric(context, "total_customer_ltv")
+    assert "GROUP BY customer_id" in total_ltv.sql
+    assert _eval_sql(frame, total_ltv.sql) == pytest.approx(300.0)
+
+    ltv_per_order = _metric(context, "customer_ltv_per_order")
+    assert "GROUP BY customer_id" in ltv_per_order.sql
+    assert any("customer_id grain rather than order_id grain" in c for c in ltv_per_order.caveats)
+    assert _eval_sql(frame, ltv_per_order.sql) == pytest.approx(75.0)
+
+
+def test_entity_ratio_with_multi_parent_child_uses_per_parent_deduplicated_sql():
+    # 60 orders across 10 customers (3 line items per order); order_id=0 belongs to both c0 and c1.
+    customer_ids = [f"c{i % 10}" for i in range(60) for _ in range(3)]
+    order_ids = [i for i in range(60) for _ in range(3)]
+    customer_ids[2] = "c1"
+    frame = pd.DataFrame({"customer_id": customer_ids, "order_id": order_ids})
+
+    context = inspect(frame)
+    opc = _metric(context, "orders_per_customer")
+    assert opc.sql != "1.0 * COUNT(DISTINCT order_id) / NULLIF(COUNT(DISTINCT customer_id), 0)"
+    assert "GROUP BY customer_id" in opc.sql
+    assert any(e.code == "multi_parent_entity_relationship" for e in opc.evidence)
+    assert any("multiple customer_id parents" in c for c in opc.caveats)
+    # 60 distinct orders across 10 customers, with order 0 shared between c0 and c1 -> 61 / 10 = 6.1.
+    assert _eval_sql(frame, opc.sql) == pytest.approx(6.1)
+
+
+def test_many_to_many_entities_do_not_emit_misleading_entity_ratio():
+    frame = pd.DataFrame(
+        {
+            "parent_id": ["p1", "p1", "p2", "p2", "p3", "p3"],
+            "child_id": ["c1", "c2", "c1", "c3", "c4", "c5"],
+        }
+    )
+    context = inspect(frame)
+    assert not any(m.kind == "entity_ratio" for m in context.metrics)
+
+
+def test_infer_metrics_guards_one_to_many_when_child_belongs_to_multiple_parents_or_missing_parent():
+    base_frame = pd.DataFrame(
+        {
+            "parent_id": ["p1", "p1", "p2", "p2", "p3", "p3"],
+            "child_id": ["c1", "c2", "c1", "c3", "c4", "c5"],
+        }
+    )
+    base_ctx = inspect(base_frame)
+
+    multi_parent_rel = (
+        RelationshipContext(
+            source_column="parent_id",
+            target_column="child_id",
+            kind="one_to_many",
+            coverage=0.80,
+            confidence=0.82,
+            violation_count=1,
+            affected_groups=1,
+        ),
+    )
+    multi_metrics = infer_metrics(
+        base_ctx.columns,
+        relationships=multi_parent_rel,
+        row_count=len(base_frame),
+    )
+    ratio = next(m for m in multi_metrics if m.name == "childs_per_parent")
+    assert ratio.sql != "1.0 * COUNT(DISTINCT child_id) / NULLIF(COUNT(DISTINCT parent_id), 0)"
+    assert "GROUP BY parent_id" in ratio.sql
+    assert any(e.code == "multi_parent_entity_relationship" for e in ratio.evidence)
+    # p1: {c1, c2}=2, p2: {c1, c3}=2, p3: {c4, c5}=2 -> average = 2.0 (not 5/3 = 1.67).
+    assert _eval_sql(base_frame, ratio.sql) == pytest.approx(2.0)
+
+    missing_parent_frame = pd.DataFrame(
+        {
+            "parent_id": ["p1", "p1", "p2", "p2", None],
+            "child_id": ["c1", "c2", "c3", "c4", "c5"],
+        }
+    )
+    missing_ctx = inspect(missing_parent_frame)
+    missing_rel = (
+        RelationshipContext(
+            source_column="parent_id",
+            target_column="child_id",
+            kind="one_to_many",
+            coverage=0.80,
+            confidence=0.85,
+            missing_pair_count=1,
+        ),
+    )
+    missing_metrics = infer_metrics(
+        missing_ctx.columns,
+        relationships=missing_rel,
+        row_count=len(missing_parent_frame),
+    )
+    missing_ratio = next(m for m in missing_metrics if m.name == "childs_per_parent")
+    assert "CASE WHEN parent_id IS NOT NULL THEN child_id END" in missing_ratio.sql
+    assert any("missing parent_id" in c.lower() for c in missing_ratio.caveats)
+    assert _eval_sql(missing_parent_frame, missing_ratio.sql) == pytest.approx(2.0)

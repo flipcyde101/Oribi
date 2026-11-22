@@ -1,9 +1,11 @@
 """Conservative within-frame column dependency detection."""
 
 import math
+from collections.abc import Sequence
 
 import pandas as pd
 
+from ..models.context import ColumnContext
 from ..models.evidence import (
     CardinalityContext,
     ColumnRelationshipContext,
@@ -496,3 +498,121 @@ def detect_relationships(
         key=lambda r: (priority.get(r.kind, 4), -r.coverage, -r.confidence, r.source_column, r.target_column),
     )[:max_relationships]
     return tuple(sorted(ranked, key=lambda r: (r.source_column, r.target_column, r.kind)))
+
+
+def _col_observed_count(col: ColumnContext, row_count: int) -> int:
+    if col.cardinality is not None:
+        return col.cardinality.observed_count
+    return max(0, row_count - col.statistics.missing_count)
+
+
+def detect_metric_grain_facts(
+    frame: pd.DataFrame,
+    columns: Sequence[ColumnContext],
+    relationships: Sequence[RelationshipContext],
+    *,
+    max_rows: int = 100_000,
+    max_columns: int = 40,
+) -> tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]], frozenset[tuple[str, str]]]:
+    """Collect entity-grain measure constancy, determinant, and multi-parent facts.
+
+    Returns ``(entity_constant_measures, entity_determinants, multi_parent_pairs)``.
+    """
+    row_count = len(frame)
+    if row_count == 0 or row_count > max_rows or max_columns <= 0:
+        return frozenset(), frozenset(), frozenset()
+
+    identifiers = sorted(
+        (
+            col
+            for col in columns
+            if col.semantic.role == "identifier"
+            and col.statistics.distinct_count >= 2
+            and _col_observed_count(col, row_count) > 0
+        ),
+        key=lambda col: col.name,
+    )[:max_columns]
+    repeating_ids = [
+        col
+        for col in identifiers
+        if col.statistics.distinct_count < _col_observed_count(col, row_count)
+    ]
+    additive_measures = sorted(
+        (
+            col
+            for col in columns
+            if col.semantic.role == "measure"
+            and _col_observed_count(col, row_count) > 0
+            and any(rec.operation == "SUM" and rec.disposition == "recommended" for rec in col.recommendations)
+        ),
+        key=lambda col: col.name,
+    )[:max_columns]
+
+    entity_constant_measures: set[tuple[str, str]] = set()
+    for entity_col in repeating_ids:
+        for measure_col in additive_measures:
+            try:
+                paired = frame[[entity_col.name, measure_col.name]].dropna()
+                if paired.empty:
+                    continue
+                group_sizes = paired.groupby(
+                    entity_col.name, dropna=True, observed=True, sort=False
+                ).size()
+                if int(group_sizes.max()) < 2:
+                    continue
+                distinct_per_entity = (
+                    paired.drop_duplicates()
+                    .groupby(entity_col.name, dropna=True, observed=True, sort=False)[measure_col.name]
+                    .nunique()
+                )
+            except (TypeError, ValueError):
+                continue
+            if not distinct_per_entity.empty and int(distinct_per_entity.max()) == 1:
+                entity_constant_measures.add((entity_col.name, measure_col.name))
+
+    entity_determinants: set[tuple[str, str]] = set()
+    determinant_names = sorted({entity_name for entity_name, _ in entity_constant_measures})
+    for det_name in determinant_names:
+        for target_col in identifiers:
+            if target_col.name == det_name:
+                continue
+            try:
+                id_pairs = frame[[det_name, target_col.name]].dropna().drop_duplicates()
+                if id_pairs.empty:
+                    continue
+                target_per_det = id_pairs.groupby(
+                    det_name, dropna=True, observed=True, sort=False
+                )[target_col.name].nunique()
+            except (TypeError, ValueError):
+                continue
+            if not target_per_det.empty and int(target_per_det.max()) == 1:
+                entity_determinants.add((det_name, target_col.name))
+
+    multi_parent_pairs: set[tuple[str, str]] = set()
+    col_names = {col.name for col in columns}
+    for rel in relationships:
+        if rel.kind == "one_to_many":
+            parent_name, child_name = rel.source_column, rel.target_column
+        elif rel.kind in {"functional_dependency", "approximate_mapping"}:
+            parent_name, child_name = rel.target_column, rel.source_column
+        else:
+            continue
+        if parent_name not in col_names or child_name not in col_names:
+            continue
+        try:
+            paired = frame[[parent_name, child_name]].dropna().drop_duplicates()
+            if paired.empty:
+                continue
+            parents_per_child = paired.groupby(
+                child_name, dropna=True, observed=True, sort=False
+            )[parent_name].nunique()
+        except (TypeError, ValueError):
+            continue
+        if not parents_per_child.empty and int(parents_per_child.max()) > 1:
+            multi_parent_pairs.add((parent_name, child_name))
+
+    return (
+        frozenset(entity_constant_measures),
+        frozenset(entity_determinants),
+        frozenset(multi_parent_pairs),
+    )

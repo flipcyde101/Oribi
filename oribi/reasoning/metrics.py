@@ -139,6 +139,81 @@ def _sample_support(observed: int) -> float:
     return 0.7 + 0.3 * observed / (observed + 12)
 
 
+def _cte_alias(prefix: str, col_name: str) -> str:
+    """Return a safe unquoted ANSI SQL identifier for a grain CTE."""
+    stem, _ = _entity_stem(col_name)
+    return f"{prefix}_{stem}"
+
+
+def _dedup_caveat(
+    m_col: ColumnContext,
+    det_col: ColumnContext,
+    *,
+    grain_mismatch_with: str | None = None,
+) -> str:
+    if grain_mismatch_with is not None:
+        return (
+            f"{m_col.name} is constant at {det_col.name} grain rather than "
+            f"{grain_mismatch_with} grain; SQL deduplicates {m_col.name} to "
+            f"{det_col.name} grain before aggregating."
+        )
+    return (
+        f"{m_col.name} is constant within each {det_col.name} across repeated rows; "
+        f"SQL deduplicates to {det_col.name} grain to avoid double-counting "
+        "(verify if identical line-item values are coincidental)."
+    )
+
+
+def _dedup_evidence(m_col: ColumnContext, det_col: ColumnContext, row_count: int) -> Evidence:
+    return Evidence(
+        "measure_constant_per_entity",
+        f"{m_col.name} takes one distinct value per {det_col.name} across repeated rows, so SQL deduplicates to {det_col.name} grain",
+        {
+            "entity_column": det_col.name,
+            "entity_distinct_count": det_col.statistics.distinct_count,
+            "observed_count": _observed_count(m_col, row_count),
+        },
+    )
+
+
+def _pick_measure_determinant(
+    m_col: ColumnContext,
+    constant_measures: frozenset[tuple[str, str]],
+    col_by_name: dict[str, ColumnContext],
+    *,
+    preferred_col: str | None = None,
+    grain_cols: set[str] | frozenset[str] = frozenset(),
+) -> ColumnContext | None:
+    determinants = [
+        col_by_name[entity_name]
+        for entity_name, measure_name in constant_measures
+        if measure_name == m_col.name and entity_name in col_by_name
+    ]
+    if not determinants:
+        return None
+    return min(
+        determinants,
+        key=lambda col: (
+            col.statistics.distinct_count,
+            0 if col.name == preferred_col else 1,
+            0 if _entity_stem(col.name)[0] == "order" else 1,
+            0 if col.name in grain_cols else 1,
+            -col.semantic.confidence,
+            col.name,
+        ),
+    )
+
+
+def _merge_caveats(base: tuple[str, ...], *extra: str) -> tuple[str, ...]:
+    merged = list(base)
+    seen = set(base)
+    for item in extra:
+        if item and item not in seen:
+            seen.add(item)
+            merged.append(item)
+    return tuple(merged)
+
+
 def _column_caveats(
     cols: Sequence[ColumnContext],
     *,
@@ -295,7 +370,10 @@ def _infer_entity_counts(
 
 def _infer_measure_totals(
     additive_measures: Sequence[ColumnContext],
+    col_by_name: dict[str, ColumnContext],
     *,
+    grain_cols: set[str],
+    constant_measures: frozenset[tuple[str, str]],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
@@ -321,7 +399,7 @@ def _infer_measure_totals(
             ),
             2,
         )
-        measure_evidence = (
+        evidence_list = [
             Evidence(
                 "additive_measure_role",
                 f"{m_col.name} is an additive measure with recommended SUM aggregation",
@@ -330,8 +408,35 @@ def _infer_measure_totals(
                     "missing_count": m_col.statistics.missing_count,
                     "semantic_confidence": m_col.semantic.confidence,
                 },
-            ),
+            )
+        ]
+        det_col = _pick_measure_determinant(
+            m_col, constant_measures, col_by_name, grain_cols=grain_cols
         )
+        base_caveats = _column_caveats(
+            (m_col,),
+            includes_sum=True,
+            has_duplicate_rows=has_duplicate_rows,
+        )
+        if det_col is not None:
+            alias = _cte_alias("per", det_col.name)
+            det_sql = _sql_col(det_col.name)
+            m_sql = _sql_col(m_col.name)
+            sql = (
+                f"WITH {alias} AS (SELECT {det_sql}, MAX({m_sql}) AS measure_value "
+                f"FROM dataset WHERE {det_sql} IS NOT NULL GROUP BY {det_sql}) "
+                f"SELECT SUM(measure_value) FROM {alias}"
+            )
+            rationale = (
+                f"Sums deduplicated {m_col.name} at {det_col.name} grain to avoid "
+                "double-counting values repeated across rows."
+            )
+            evidence_list.append(_dedup_evidence(m_col, det_col, row_count))
+            caveats = _merge_caveats(base_caveats, _dedup_caveat(m_col, det_col))
+        else:
+            sql = f"SUM({_sql_col(m_col.name)})"
+            rationale = f"Sums additive measure {m_col.name} across observed rows."
+            caveats = base_caveats
         priority_tier = 1 if named_measure else 2
         results.append(
             (
@@ -340,16 +445,12 @@ def _infer_measure_totals(
                     name=name,
                     label=label,
                     kind="measure_total",
-                    sql=f"SUM({_sql_col(m_col.name)})",
+                    sql=sql,
                     columns=(m_col.name,),
                     confidence=confidence,
-                    rationale=f"Sums additive measure {m_col.name} across observed rows.",
-                    evidence=measure_evidence,
-                    caveats=_column_caveats(
-                        (m_col,),
-                        includes_sum=True,
-                        has_duplicate_rows=has_duplicate_rows,
-                    ),
+                    rationale=rationale,
+                    evidence=tuple(evidence_list),
+                    caveats=caveats,
                 ),
             )
         )
@@ -359,10 +460,13 @@ def _infer_measure_totals(
 def _infer_measure_per_entity(
     identifiers: Sequence[ColumnContext],
     additive_measures: Sequence[ColumnContext],
+    col_by_name: dict[str, ColumnContext],
     *,
     grain_cols: set[str],
     grain_confidence: float,
     one_to_many_cols: set[str],
+    constant_measures: frozenset[tuple[str, str]],
+    entity_determinants: frozenset[tuple[str, str]],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
@@ -452,6 +556,79 @@ def _infer_measure_per_entity(
                 priority_tier = 3
             else:
                 priority_tier = 4
+
+            det_col = _pick_measure_determinant(
+                m_col,
+                constant_measures,
+                col_by_name,
+                preferred_col=id_col.name,
+                grain_cols=grain_cols,
+            )
+            base_caveats = _column_caveats(
+                (m_col, id_col),
+                includes_sum=True,
+                has_duplicate_rows=has_duplicate_rows,
+            )
+            if det_col is not None:
+                alias = _cte_alias("per", det_col.name)
+                det_sql = _sql_col(det_col.name)
+                m_sql = _sql_col(m_col.name)
+                id_sql = _sql_col(id_col.name)
+                sum_expr = (
+                    "SUM(measure_value)"
+                    if _is_float_column(m_col)
+                    else "1.0 * SUM(measure_value)"
+                )
+                if det_col.name == id_col.name:
+                    sql = (
+                        f"WITH {alias} AS (SELECT {det_sql}, MAX({m_sql}) AS measure_value "
+                        f"FROM dataset WHERE {det_sql} IS NOT NULL GROUP BY {det_sql}) "
+                        f"SELECT {sum_expr} / NULLIF(COUNT({det_sql}), 0) FROM {alias}"
+                    )
+                    rationale = (
+                        f"Deduplicates {m_col.name} to {det_col.name} grain before computing "
+                        f"per-{stem} average so repeated rows do not double-count {m_col.name}."
+                    )
+                    caveats = _merge_caveats(base_caveats, _dedup_caveat(m_col, det_col))
+                elif (
+                    (det_col.name, id_col.name) in entity_determinants
+                    and det_col.statistics.missing_count == 0
+                ):
+                    sql = (
+                        f"WITH {alias} AS (SELECT {det_sql}, MAX({id_sql}) AS entity_value, "
+                        f"MAX({m_sql}) AS measure_value FROM dataset "
+                        f"WHERE {det_sql} IS NOT NULL GROUP BY {det_sql}) "
+                        f"SELECT {sum_expr} / NULLIF(COUNT(DISTINCT entity_value), 0) FROM {alias}"
+                    )
+                    rationale = (
+                        f"Deduplicates {m_col.name} to {det_col.name} grain before dividing "
+                        f"by distinct {id_col.name} entities."
+                    )
+                    caveats = _merge_caveats(base_caveats, _dedup_caveat(m_col, det_col))
+                else:
+                    sql = (
+                        f"WITH {alias} AS (SELECT {det_sql}, MAX({m_sql}) AS measure_value "
+                        f"FROM dataset WHERE {det_sql} IS NOT NULL GROUP BY {det_sql}) "
+                        f"SELECT (SELECT {sum_expr} FROM {alias}) / "
+                        f"NULLIF((SELECT COUNT(DISTINCT {id_sql}) FROM dataset), 0)"
+                    )
+                    rationale = (
+                        f"Deduplicates {m_col.name} at {det_col.name} grain before dividing "
+                        f"by distinct {id_col.name} entities."
+                    )
+                    caveats = _merge_caveats(
+                        base_caveats,
+                        _dedup_caveat(m_col, det_col, grain_mismatch_with=id_col.name),
+                    )
+                evidence.append(_dedup_evidence(m_col, det_col, row_count))
+            else:
+                sql = f"{_sql_sum_numerator(m_col)} / NULLIF(COUNT(DISTINCT {_sql_col(id_col.name)}), 0)"
+                rationale = (
+                    f"Computes total {m_col.name} per distinct {id_col.name} "
+                    "using NULLIF to avoid division by zero."
+                )
+                caveats = base_caveats
+
             results.append(
                 (
                     (priority_tier, -confidence, name),
@@ -459,19 +636,12 @@ def _infer_measure_per_entity(
                         name=name,
                         label=label,
                         kind="measure_per_entity",
-                        sql=f"{_sql_sum_numerator(m_col)} / NULLIF(COUNT(DISTINCT {_sql_col(id_col.name)}), 0)",
+                        sql=sql,
                         columns=(m_col.name, id_col.name),
                         confidence=confidence,
-                        rationale=(
-                            f"Computes total {m_col.name} per distinct {id_col.name} "
-                            "using NULLIF to avoid division by zero."
-                        ),
+                        rationale=rationale,
                         evidence=tuple(evidence),
-                        caveats=_column_caveats(
-                            (m_col, id_col),
-                            includes_sum=True,
-                            has_duplicate_rows=has_duplicate_rows,
-                        ),
+                        caveats=caveats,
                     ),
                 )
             )
@@ -479,19 +649,40 @@ def _infer_measure_per_entity(
 
 
 def _infer_entity_ratios(
-    one_to_many_rels: Sequence[RelationshipContext],
+    relationships: Sequence[RelationshipContext],
     col_by_name: dict[str, ColumnContext],
     id_names: set[str],
     *,
+    multi_parent_pairs: frozenset[tuple[str, str]],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
-    results: list[_Candidate] = []
-    for rel in one_to_many_rels:
-        if rel.source_column not in id_names or rel.target_column not in id_names:
+    rel_priority = {"one_to_many": 0, "functional_dependency": 1, "approximate_mapping": 2}
+    selected_rels: dict[tuple[str, str], RelationshipContext] = {}
+    for rel in relationships:
+        if rel.kind == "one_to_many":
+            pair = (rel.source_column, rel.target_column)
+        elif rel.kind == "functional_dependency" and rel.mapping_cardinality == "many_to_one":
+            pair = (rel.target_column, rel.source_column)
+        elif rel.kind == "approximate_mapping":
+            pair = (rel.target_column, rel.source_column)
+        else:
             continue
-        group_col = col_by_name[rel.source_column]
-        entity_col = col_by_name[rel.target_column]
+        parent_name, child_name = pair
+        if parent_name not in id_names or child_name not in id_names:
+            continue
+        parent_col = col_by_name[parent_name]
+        child_col = col_by_name[child_name]
+        if rel.kind != "one_to_many" and parent_col.statistics.distinct_count >= child_col.statistics.distinct_count:
+            continue
+        existing = selected_rels.get(pair)
+        if existing is None or rel_priority[rel.kind] < rel_priority[existing.kind]:
+            selected_rels[pair] = rel
+
+    results: list[_Candidate] = []
+    for (parent_name, child_name), rel in sorted(selected_rels.items()):
+        group_col = col_by_name[parent_name]
+        entity_col = col_by_name[child_name]
         group_stem, _ = _entity_stem(group_col.name)
         entity_stem, _ = _entity_stem(entity_col.name)
         entity_plural = _pluralize(entity_stem)
@@ -499,22 +690,95 @@ def _infer_entity_ratios(
         label = f"{entity_plural.replace('_', ' ').capitalize()} per {group_stem.replace('_', ' ')}"
         avg_sem = (group_col.semantic.confidence + entity_col.semantic.confidence) / 2.0
         min_cov = min(_coverage(group_col, row_count), _coverage(entity_col, row_count))
-        confidence = round(
-            min(0.98, 0.50 * rel.confidence + 0.30 * avg_sem + 0.20 * min_cov),
-            2,
+        is_multi_parent = (
+            (parent_name, child_name) in multi_parent_pairs
+            or rel.violation_count > 0
+            or rel.affected_groups > 0
+            or (rel.kind == "one_to_many" and rel.coverage < 1.0 and rel.missing_pair_count == 0)
         )
-        ratio_evidence = (
+        has_missing_parent = rel.missing_pair_count > 0
+        raw_confidence = 0.50 * rel.confidence + 0.30 * avg_sem + 0.20 * min_cov
+        if is_multi_parent:
+            raw_confidence *= rel.coverage
+        confidence = round(min(0.98, raw_confidence), 2)
+
+        evidence_list = [
             Evidence(
-                "one_to_many_entity_hierarchy",
-                f"Observed one-to-many mapping from {group_col.name} to {entity_col.name}",
+                "one_to_many_entity_hierarchy" if rel.kind == "one_to_many" else "entity_hierarchy_mapping",
+                f"Observed mapping from {group_col.name} to {entity_col.name}",
                 {
+                    "relationship_kind": rel.kind,
                     "coverage": rel.coverage,
                     "relationship_confidence": rel.confidence,
                     "group_distinct_count": group_col.statistics.distinct_count,
                     "entity_distinct_count": entity_col.statistics.distinct_count,
                 },
-            ),
+            )
+        ]
+        base_caveats = _column_caveats(
+            (entity_col, group_col),
+            includes_sum=False,
+            has_duplicate_rows=has_duplicate_rows,
         )
+        group_sql = _sql_col(group_col.name)
+        entity_sql = _sql_col(entity_col.name)
+        if is_multi_parent:
+            alias = _cte_alias("per", group_col.name)
+            sql = (
+                f"WITH {alias} AS (SELECT {group_sql}, COUNT(DISTINCT {entity_sql}) AS entity_count "
+                f"FROM dataset WHERE {group_sql} IS NOT NULL GROUP BY {group_sql}) "
+                f"SELECT 1.0 * SUM(entity_count) / NULLIF(COUNT({group_sql}), 0) FROM {alias}"
+            )
+            rationale = (
+                f"Counts distinct {entity_col.name} entities within each {group_col.name} before "
+                f"averaging because some {entity_col.name} values belong to multiple {group_col.name} parents."
+            )
+            evidence_list.append(
+                Evidence(
+                    "multi_parent_entity_relationship",
+                    f"Some {entity_col.name} values map to multiple {group_col.name} parents",
+                    {
+                        "coverage": rel.coverage,
+                        "violation_count": rel.violation_count,
+                        "affected_groups": rel.affected_groups,
+                    },
+                )
+            )
+            caveats = _merge_caveats(
+                base_caveats,
+                (
+                    f"Some {entity_col.name} values belong to multiple {group_col.name} parents; "
+                    f"SQL counts distinct {entity_col.name} per {group_col.name} before averaging "
+                    "so shared entities are counted for each parent."
+                ),
+            )
+        elif has_missing_parent:
+            sql = (
+                f"1.0 * COUNT(DISTINCT CASE WHEN {group_sql} IS NOT NULL THEN {entity_sql} END) / "
+                f"NULLIF(COUNT(DISTINCT {group_sql}), 0)"
+            )
+            rationale = (
+                f"Measures average distinct {entity_col.name} entities per distinct {group_col.name}, "
+                f"excluding rows where {group_col.name} is NULL."
+            )
+            caveats = _merge_caveats(
+                base_caveats,
+                (
+                    f"Rows missing {group_col.name} are excluded from the {entity_col.name} "
+                    f"numerator to avoid inflating the per-{group_stem} ratio."
+                ),
+            )
+        else:
+            sql = (
+                f"1.0 * COUNT(DISTINCT {entity_sql}) / "
+                f"NULLIF(COUNT(DISTINCT {group_sql}), 0)"
+            )
+            rationale = (
+                f"Measures average distinct {entity_col.name} entities per "
+                f"distinct {group_col.name} based on the observed one-to-many relationship."
+            )
+            caveats = base_caveats
+
         results.append(
             (
                 (2, -confidence, name),
@@ -522,22 +786,12 @@ def _infer_entity_ratios(
                     name=name,
                     label=label,
                     kind="entity_ratio",
-                    sql=(
-                        f"1.0 * COUNT(DISTINCT {_sql_col(entity_col.name)}) / "
-                        f"NULLIF(COUNT(DISTINCT {_sql_col(group_col.name)}), 0)"
-                    ),
+                    sql=sql,
                     columns=(entity_col.name, group_col.name),
                     confidence=confidence,
-                    rationale=(
-                        f"Measures average distinct {entity_col.name} entities per "
-                        f"distinct {group_col.name} based on the observed one-to-many relationship."
-                    ),
-                    evidence=ratio_evidence,
-                    caveats=_column_caveats(
-                        (entity_col, group_col),
-                        includes_sum=False,
-                        has_duplicate_rows=has_duplicate_rows,
-                    ),
+                    rationale=rationale,
+                    evidence=tuple(evidence_list),
+                    caveats=caveats,
                 ),
             )
         )
@@ -550,43 +804,114 @@ def _build_measure_ratio(
     numerator: ColumnContext,
     denominator: ColumnContext,
     rationale: str,
+    col_by_name: dict[str, ColumnContext],
     *,
+    grain_cols: set[str],
+    constant_measures: frozenset[tuple[str, str]],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> _Candidate:
     confidence = _pair_measure_confidence(numerator, denominator, row_count)
+    evidence_list = [
+        Evidence(
+            "additive_measure_ratio",
+            f"Both {numerator.name} and {denominator.name} are additive measures",
+            {
+                "numerator_observed_count": _observed_count(numerator, row_count),
+                "denominator_observed_count": _observed_count(denominator, row_count),
+            },
+        )
+    ]
+    base_caveats = _column_caveats(
+        (numerator, denominator),
+        includes_sum=True,
+        has_duplicate_rows=has_duplicate_rows,
+    )
+    num_det = _pick_measure_determinant(
+        numerator, constant_measures, col_by_name, grain_cols=grain_cols
+    )
+    den_det = _pick_measure_determinant(
+        denominator, constant_measures, col_by_name, grain_cols=grain_cols
+    )
+    num_sql = _sql_col(numerator.name)
+    den_sql = _sql_col(denominator.name)
+    if num_det is None and den_det is None:
+        sql = f"{_sql_sum_numerator(numerator)} / NULLIF(SUM({den_sql}), 0)"
+        caveats = base_caveats
+    elif num_det is not None and den_det is not None and num_det.name == den_det.name:
+        alias = _cte_alias("per", num_det.name)
+        det_sql = _sql_col(num_det.name)
+        num_sum = (
+            "SUM(numerator_value)"
+            if _is_float_column(numerator)
+            else "1.0 * SUM(numerator_value)"
+        )
+        sql = (
+            f"WITH {alias} AS (SELECT {det_sql}, MAX({num_sql}) AS numerator_value, "
+            f"MAX({den_sql}) AS denominator_value FROM dataset "
+            f"WHERE {det_sql} IS NOT NULL GROUP BY {det_sql}) "
+            f"SELECT {num_sum} / NULLIF(SUM(denominator_value), 0) FROM {alias}"
+        )
+        evidence_list.append(_dedup_evidence(numerator, num_det, row_count))
+        evidence_list.append(_dedup_evidence(denominator, den_det, row_count))
+        caveats = _merge_caveats(
+            base_caveats,
+            _dedup_caveat(numerator, num_det),
+            _dedup_caveat(denominator, den_det),
+        )
+    else:
+        ctes: list[str] = []
+        extra_caveats: list[str] = []
+        if num_det is not None:
+            num_alias = _cte_alias("num_per", num_det.name)
+            num_det_sql = _sql_col(num_det.name)
+            ctes.append(
+                f"{num_alias} AS (SELECT {num_det_sql}, MAX({num_sql}) AS measure_value "
+                f"FROM dataset WHERE {num_det_sql} IS NOT NULL GROUP BY {num_det_sql})"
+            )
+            num_select = f"(SELECT SUM(measure_value) FROM {num_alias})"
+            evidence_list.append(_dedup_evidence(numerator, num_det, row_count))
+            extra_caveats.append(_dedup_caveat(numerator, num_det))
+        else:
+            num_select = f"(SELECT SUM({num_sql}) FROM dataset)"
+        if den_det is not None:
+            den_alias = _cte_alias("den_per", den_det.name)
+            den_det_sql = _sql_col(den_det.name)
+            ctes.append(
+                f"{den_alias} AS (SELECT {den_det_sql}, MAX({den_sql}) AS measure_value "
+                f"FROM dataset WHERE {den_det_sql} IS NOT NULL GROUP BY {den_det_sql})"
+            )
+            den_select = f"(SELECT SUM(measure_value) FROM {den_alias})"
+            evidence_list.append(_dedup_evidence(denominator, den_det, row_count))
+            extra_caveats.append(_dedup_caveat(denominator, den_det))
+        else:
+            den_select = f"(SELECT SUM({den_sql}) FROM dataset)"
+        float_prefix = "" if _is_float_column(numerator) else "1.0 * "
+        sql = f"WITH {', '.join(ctes)} SELECT {float_prefix}{num_select} / NULLIF({den_select}, 0)"
+        caveats = _merge_caveats(base_caveats, *extra_caveats)
+
     return (
         (0, -confidence, name),
         MetricDefinition(
             name=name,
             label=label,
             kind="measure_ratio",
-            sql=f"{_sql_sum_numerator(numerator)} / NULLIF(SUM({_sql_col(denominator.name)}), 0)",
+            sql=sql,
             columns=(numerator.name, denominator.name),
             confidence=confidence,
             rationale=rationale,
-            evidence=(
-                Evidence(
-                    "additive_measure_ratio",
-                    f"Both {numerator.name} and {denominator.name} are additive measures",
-                    {
-                        "numerator_observed_count": _observed_count(numerator, row_count),
-                        "denominator_observed_count": _observed_count(denominator, row_count),
-                    },
-                ),
-            ),
-            caveats=_column_caveats(
-                (numerator, denominator),
-                includes_sum=True,
-                has_duplicate_rows=has_duplicate_rows,
-            ),
+            evidence=tuple(evidence_list),
+            caveats=caveats,
         ),
     )
 
 
 def _infer_measure_ratios(
     additive_measures: Sequence[ColumnContext],
+    col_by_name: dict[str, ColumnContext],
     *,
+    grain_cols: set[str],
+    constant_measures: frozenset[tuple[str, str]],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
@@ -625,6 +950,9 @@ def _infer_measure_ratios(
                     f"Computes aggregate {prof_col.name} over aggregate {rev_col.name} "
                     "rather than averaging row-level margins."
                 ),
+                col_by_name,
+                grain_cols=grain_cols,
+                constant_measures=constant_measures,
                 row_count=row_count,
                 has_duplicate_rows=has_duplicate_rows,
             )
@@ -650,6 +978,9 @@ def _infer_measure_ratios(
                     f"Computes aggregate {rev_col.name} per summed unit of {qty_col.name} "
                     "using NULLIF to avoid division by zero."
                 ),
+                col_by_name,
+                grain_cols=grain_cols,
+                constant_measures=constant_measures,
                 row_count=row_count,
                 has_duplicate_rows=has_duplicate_rows,
             )
@@ -665,6 +996,9 @@ def infer_metrics(
     relationships: tuple[RelationshipContext, ...] = (),
     row_count: int = 0,
     has_duplicate_rows: bool = False,
+    entity_constant_measures: frozenset[tuple[str, str]] = frozenset(),
+    entity_determinants: frozenset[tuple[str, str]] = frozenset(),
+    multi_parent_pairs: frozenset[tuple[str, str]] = frozenset(),
 ) -> tuple[MetricDefinition, ...]:
     """Infer conservative, evidence-backed analytical metric definitions.
 
@@ -701,6 +1035,38 @@ def infer_metrics(
     if not identifiers and not additive_measures:
         return ()
 
+    id_names = {col.name for col in identifiers}
+    repeating_id_names = {
+        col.name
+        for col in identifiers
+        if col.statistics.distinct_count < _observed_count(col, row_count)
+    }
+    measure_names = {col.name for col in additive_measures}
+    effective_constant_measures = set(entity_constant_measures)
+    effective_determinants = set(entity_determinants)
+    for rel in relationships:
+        if (
+            rel.kind == "functional_dependency"
+            and rel.coverage == 1.0
+            and rel.violation_count == 0
+            and rel.missing_pair_count == 0
+        ):
+            if rel.source_column in repeating_id_names and rel.target_column in measure_names:
+                effective_constant_measures.add((rel.source_column, rel.target_column))
+            if rel.source_column in id_names and rel.target_column in id_names:
+                effective_determinants.add((rel.source_column, rel.target_column))
+        elif (
+            rel.kind == "one_to_many"
+            and rel.coverage == 1.0
+            and rel.missing_pair_count == 0
+            and rel.source_column in id_names
+            and rel.target_column in id_names
+        ):
+            effective_determinants.add((rel.target_column, rel.source_column))
+
+    frozen_constant_measures = frozenset(effective_constant_measures)
+    frozen_determinants = frozenset(effective_determinants)
+
     candidates: list[_Candidate] = [
         *_infer_entity_counts(
             identifiers,
@@ -712,27 +1078,37 @@ def infer_metrics(
         ),
         *_infer_measure_totals(
             additive_measures,
+            col_by_name,
+            grain_cols=grain_cols,
+            constant_measures=frozen_constant_measures,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
         *_infer_measure_per_entity(
             identifiers,
             additive_measures,
+            col_by_name,
             grain_cols=grain_cols,
             grain_confidence=grain_confidence,
             one_to_many_cols=one_to_many_cols,
+            constant_measures=frozen_constant_measures,
+            entity_determinants=frozen_determinants,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
         *_infer_entity_ratios(
-            one_to_many_rels,
+            relationships,
             col_by_name,
-            {col.name for col in identifiers},
+            id_names,
+            multi_parent_pairs=multi_parent_pairs,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
         *_infer_measure_ratios(
             additive_measures,
+            col_by_name,
+            grain_cols=grain_cols,
+            constant_measures=frozen_constant_measures,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
