@@ -1,6 +1,7 @@
 import math
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -50,13 +51,17 @@ def test_rejects_invalid_inputs():
 
 
 @pytest.mark.parametrize("name, value", [
-    ("top_k", 1.5), ("top_k", True), ("top_k", "2"),
-    ("max_exact_rows", 1.5), ("max_key_columns", False),
+    ("top_k", 1.5), ("top_k", np.float64(2.0)), ("top_k", True), ("top_k", np.bool_(True)), ("top_k", "2"),
+    ("max_exact_rows", 1.5), ("max_key_columns", False), ("max_key_columns", np.bool_(False)),
     ("max_relationships", 2.5), ("max_relationship_columns", "4"),
     ("max_gap_examples", True), ("max_gap_warnings", 1.5),
-    ("top_k", -1), ("max_exact_rows", 0), ("max_key_columns", 1),
-    ("max_relationships", -1), ("max_relationship_columns", -1),
-    ("max_gap_examples", -1), ("max_gap_warnings", 0),
+    ("top_k", -1), ("top_k", np.int64(-1)),
+    ("max_exact_rows", 0), ("max_exact_rows", np.uint8(0)),
+    ("max_key_columns", 1), ("max_key_columns", np.int32(1)),
+    ("max_relationships", -1), ("max_relationships", np.int8(-1)),
+    ("max_relationship_columns", -1), ("max_relationship_columns", np.int64(-1)),
+    ("max_gap_examples", -1), ("max_gap_examples", np.int16(-1)),
+    ("max_gap_warnings", 0), ("max_gap_warnings", np.int64(0)),
 ])
 def test_invalid_integer_options_raise_at_configuration_time(name, value):
     with pytest.raises(ValueError, match=name):
@@ -70,6 +75,48 @@ def test_valid_option_boundaries_and_defaults():
     assert options.top_k == 0
     assert ProfileOptions().max_gap_warnings == 10
     assert ProfileOptions(top_k=pd.Series([2]).iloc[0]).top_k == 2
+
+
+def test_numpy_integral_options_normalize_to_python_int_and_stay_frozen():
+    int64_max = np.int64(np.iinfo("int64").max)
+    uint64_max = np.uint64(np.iinfo("uint64").max)
+    options = ProfileOptions(
+        top_k=int64_max,
+        max_exact_rows=uint64_max,
+        max_key_columns=np.int8(8),
+        max_relationships=np.int32(40),
+        max_relationship_columns=np.uint8(12),
+        max_gap_examples=int64_max,
+        max_gap_warnings=np.uint16(5),
+    )
+    expected = ProfileOptions(
+        top_k=int(int64_max),
+        max_exact_rows=int(uint64_max),
+        max_key_columns=8,
+        max_relationships=40,
+        max_relationship_columns=12,
+        max_gap_examples=int(int64_max),
+        max_gap_warnings=5,
+    )
+
+    assert options == expected
+    for field_name in (
+        "top_k",
+        "max_exact_rows",
+        "max_key_columns",
+        "max_relationships",
+        "max_relationship_columns",
+        "max_gap_examples",
+        "max_gap_warnings",
+    ):
+        assert type(getattr(options, field_name)) is int
+
+    updated = replace(options, top_k=np.int16(3))
+    assert type(updated.top_k) is int
+    assert updated.top_k == 3
+
+    with pytest.raises(FrozenInstanceError):
+        options.top_k = 5  # type: ignore[misc]
 
 
 @pytest.mark.parametrize("value", [1, "false", None])

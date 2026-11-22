@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -333,6 +335,64 @@ def test_small_number_of_temporal_gaps_keeps_detailed_output():
     assert len(warnings) == 2
     assert all("gaps_omitted" not in w.evidence[0].details for w in warnings)
     assert all(len(w.evidence[0].details["expected_timestamps"]) == 1 for w in warnings)
+
+
+@pytest.mark.parametrize("numpy_limit", [
+    np.int64(np.iinfo("int64").max),
+    np.uint64(np.iinfo("uint64").max),
+    np.int8(64),
+])
+def test_numpy_integer_top_k_and_relationship_limits_match_python_int_without_overflow(numpy_limit):
+    frame = pd.DataFrame({
+        "customer_id": ["c1", "c1", "c2", "c2"],
+        "order_id": ["o1", "o2", "o3", "o4"],
+        "revenue": [1.25, 2.75, 3.25, 4.5],
+    })
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        expected = inspect(
+            frame,
+            options=ProfileOptions(top_k=int(numpy_limit), max_relationships=int(numpy_limit)),
+        )
+        actual = inspect(
+            frame,
+            options=ProfileOptions(top_k=numpy_limit, max_relationships=numpy_limit),
+        )
+
+    assert len(actual.get_column("revenue").statistics.top_values) == 4
+    assert actual.get_column("revenue").statistics == expected.get_column("revenue").statistics
+    assert actual.relationships == expected.relationships
+    assert actual.to_dict(include_values=True) == expected.to_dict(include_values=True)
+
+
+@pytest.mark.parametrize("numpy_limit", [
+    np.int64(np.iinfo("int64").max),
+    np.uint64(np.iinfo("uint64").max),
+    np.int8(127),
+])
+def test_large_numpy_max_gap_examples_retains_same_examples_as_python_int(numpy_limit):
+    frame = pd.DataFrame({
+        "event_time": pd.to_datetime([
+            "2026-01-01",
+            "2026-01-02",
+            "2026-01-03",
+            "2026-01-08",
+            "2026-01-09",
+        ]),
+    })
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        expected = inspect(frame, options=ProfileOptions(max_gap_examples=int(numpy_limit)))
+        actual = inspect(frame, options=ProfileOptions(max_gap_examples=numpy_limit))
+
+    actual_details = actual.get_column("event_time").warnings[0].evidence[0].details
+    expected_details = expected.get_column("event_time").warnings[0].evidence[0].details
+    assert len(actual_details["expected_timestamps"]) == 4
+    assert actual_details["examples_omitted"] == 0
+    assert actual_details == expected_details
+    assert actual.to_dict(include_values=True) == expected.to_dict(include_values=True)
 
 
 def _column(values, name="value"):
