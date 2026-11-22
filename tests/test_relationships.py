@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from oribi import CardinalityContext, ProfileOptions, inspect
 from oribi.profiling import relationships
@@ -146,7 +147,7 @@ def test_complete_entity_key_establishes_exact_one_to_many():
         "customer_id": [f"c{i // 4}" for i in range(100)],
         "order_id": [f"o{i}" for i in range(100)],
     })
-    context = inspect(frame)
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=1))
     key = next(key for key in context.candidate_keys if key.columns == ("order_id",))
     assert key.verified_unique
     assert any(rel.kind == "one_to_many" and rel.source_column == "customer_id"
@@ -450,6 +451,78 @@ def test_hierarchical_values_produce_only_observed_functional_dependencies():
     context = inspect(frame)
     assert any(rel.source_column == "L1" and rel.target_column == "L2" and rel.kind == "functional_dependency" for rel in context.relationships)
     assert not any(rel.source_column == "L2" and rel.target_column == "L1" and rel.kind == "functional_dependency" for rel in context.relationships)
+
+
+def _product_family_frame():
+    return pd.DataFrame({
+        "product_code": ["p1", "p1", "p2", "p2", "p3", "p3", "p4", "p4"],
+        "family": ["A", "A", "A", "A", "B", "B", "B", "B"],
+    })
+
+
+def test_directional_mapping_survives_constants_under_column_limit():
+    base = _product_family_frame()
+    padded = base.assign(const_a="x", const_b="y")
+    options = ProfileOptions(max_relationship_columns=2)
+
+    for frame in (base, padded, padded.iloc[:, ::-1]):
+        assert [
+            (rel.source_column, rel.target_column, rel.kind, rel.mapping_cardinality)
+            for rel in inspect(frame, options=options).relationships
+        ] == [("product_code", "family", "functional_dependency", "many_to_one")]
+
+
+def test_sparse_unique_source_does_not_consume_mapping_budget():
+    frame = _product_family_frame().assign(
+        sparse_id=["s1", None, "s2", None, None, None, None, None],
+    )
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=2))
+
+    assert [(rel.source_column, rel.target_column, rel.kind) for rel in context.relationships] == [
+        ("product_code", "family", "functional_dependency"),
+    ]
+
+
+def test_unique_observed_values_can_be_a_directional_mapping_target():
+    frame = pd.DataFrame({
+        "product_code": ["p1", "p1", "p2", "p2"],
+        "item_id": ["i1", None, "i2", None],
+    })
+    context = inspect(frame, options=ProfileOptions(max_relationship_columns=2))
+
+    (relation,) = context.relationships
+    assert (relation.source_column, relation.target_column, relation.kind) == (
+        "product_code", "item_id", "approximate_mapping",
+    )
+    assert relation.coverage == 1.0
+    assert relation.missing_pair_count == 2
+
+
+def test_directional_mapping_respects_column_and_relationship_budgets():
+    frame = pd.DataFrame({"label": ["a", "a", "b", "b"], "code": ["x", "x", "y", "y"]})
+
+    assert inspect(frame, options=ProfileOptions(max_relationship_columns=1)).relationships == ()
+    assert {rel.kind for rel in inspect(frame).relationships} == {
+        "one_to_one", "functional_dependency",
+    }
+    limited = inspect(frame, options=ProfileOptions(max_relationships=1))
+    assert [rel.kind for rel in limited.relationships] == ["one_to_one"]
+    assert inspect(frame, options=ProfileOptions(max_relationships=0)).relationships == ()
+
+
+@pytest.mark.parametrize(("distinct_count", "has_mapping"), [(20, True), (21, False)])
+def test_directional_mapping_respects_distinct_value_limit(distinct_count, has_mapping):
+    codes = [f"p{i}" for i in range(distinct_count)] + ["p0"] * (40 - distinct_count)
+    frame = pd.DataFrame({
+        "product_code": codes,
+        "family": ["A" if code == "p0" else "B" for code in codes],
+    })
+
+    assert any(
+        rel.source_column == "product_code" and rel.target_column == "family"
+        and rel.kind == "functional_dependency"
+        for rel in inspect(frame).relationships
+    ) is has_mapping
 
 
 def test_repeated_and_mostly_unique_columns_have_distinct_relationships():

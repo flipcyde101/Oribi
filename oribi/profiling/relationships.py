@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Sequence
+from functools import cache
 
 import pandas as pd
 
@@ -274,6 +275,9 @@ def detect_relationships(
 ) -> tuple[RelationshipContext, ...]:
     """Find observed value mappings and repeated group-to-entity links.
 
+    Directional mapping candidates must vary before they count toward the
+    column budget. Sources must also reuse values, but targets may be unique.
+
     One-to-many links require an observed candidate key on the entity side,
     with each entity mapping to one repeated group value. Column names do not
     establish a relationship.
@@ -286,34 +290,42 @@ def detect_relationships(
     ):
         return ()
     search_columns = min(max_relationship_columns, max(8, math.ceil(math.sqrt(max_relationships * 4))))
-    eligible_sources = [
-        name for name, role in roles.items()
-        if role in {"identifier", "dimension", "categorical", "boolean", "text", "temporal"}
-    ]
-    eligible_targets = [name for name, role in roles.items() if role != "unknown"]
     max_distinct = min(500, max(20, len(frame) // 2))
-    eligible_sources = [name for name in eligible_sources if _nunique(frame[name]) <= max_distinct]
-    eligible_targets = [name for name in eligible_targets if _nunique(frame[name]) <= max_distinct]
-    def rank(name: str) -> tuple[int, str]:
-        return (_nunique(frame[name]), name)
 
-    eligible_sources = sorted(eligible_sources, key=rank)[:search_columns]
-    eligible_targets = sorted(eligible_targets, key=rank)[:search_columns]
+    @cache
+    def distinct_count(name: str) -> int:
+        return _nunique(frame[name])
+
+    def rank(name: str) -> tuple[int, str]:
+        return distinct_count(name), name
+
+    source_observed_counts: dict[str, int] = {}
+    eligible_targets: list[str] = []
+    for name, role in roles.items():
+        if role == "unknown":
+            continue
+        column_distinct = distinct_count(name)
+        if not 2 <= column_distinct <= max_distinct:
+            continue
+        eligible_targets.append(name)
+        if role in {"identifier", "dimension", "categorical", "boolean", "text", "temporal"}:
+            observed = int(frame[name].notna().sum())
+            # A unique determinant maps trivially to every row-level value.
+            if column_distinct < observed:
+                source_observed_counts[name] = observed
+
+    mapping_sources = sorted(source_observed_counts, key=rank)[:search_columns]
+    mapping_targets = sorted(eligible_targets, key=rank)[:search_columns]
     results: list[RelationshipContext] = []
-    for source in eligible_sources:
-        for target in eligible_targets:
+    for source in mapping_sources:
+        source_values = distinct_count(source)
+        source_observed = source_observed_counts[source]
+        for target in mapping_targets:
             if source == target:
                 continue
             try:
                 pairs = frame[[source, target]].dropna().drop_duplicates()
             except (TypeError, ValueError):
-                continue
-            source_values = _nunique(frame[source])
-            if source_values < 2:
-                continue
-            source_observed = int(frame[source].notna().sum())
-            if source_values >= source_observed:
-                # A unique determinant maps trivially to every row-level value.
                 continue
             mapping_counts = pairs.groupby(source, dropna=True, observed=True, sort=False)[target].nunique()
             unique_mapping = int(mapping_counts.eq(1).sum())
@@ -322,8 +334,8 @@ def detect_relationships(
             violations = int((mapping_counts - 1).clip(lower=0).sum())
             paired_rows = int(frame[[source, target]].notna().all(axis=1).sum())
             missing_pairs = len(frame) - paired_rows
-            target_values = _nunique(frame[target])
-            if coverage >= .98 and target_values > 1:
+            if coverage >= .98:
+                target_values = distinct_count(target)
                 exact_mapping = unique_mapping == source_values and not violations and not missing_pairs
                 repeated_fraction = max(0.0, (source_observed - source_values) / source_observed)
                 confidence, components = _score(
@@ -364,15 +376,9 @@ def detect_relationships(
         distinct = forward_details.get("source_distinct")
         if not isinstance(distinct, int) or distinct != forward_details.get("target_distinct"):
             continue
-        if (
-            distinct >= int(frame[source].notna().sum())
-            or distinct >= int(frame[target].notna().sum())
-        ):
-            # A bijection between unique columns is only row alignment, not
-            # meaningful value-level evidence of a reusable relationship.
-            continue
         coverage = min(forward.coverage, reverse.coverage)
-        observed_count = min(int(frame[source].notna().sum()), int(frame[target].notna().sum()))
+        # Both directions have already passed the reused-value source filter.
+        observed_count = min(source_observed_counts[source], source_observed_counts[target])
         repeated_fraction = max(0.0, (observed_count - distinct) / observed_count) if observed_count else 0.0
         confidence, components = _score(
             {"mapping_coverage": coverage, "repeated_value_support": repeated_fraction,
@@ -412,13 +418,13 @@ def detect_relationships(
         key=lambda name: (roles[name] != "identifier", rank(name)),
     )[:search_columns]
     for entity in sorted(single_keys)[:search_columns]:
-        entity_count = _nunique(frame[entity])
+        entity_count = distinct_count(entity)
         if entity_count < 2:
             continue
         for group in sorted(eligible_groups):
             if group == entity:
                 continue
-            group_count = _nunique(frame[group])
+            group_count = distinct_count(group)
             if group_count < 2 or group_count >= entity_count:
                 continue
             try:
