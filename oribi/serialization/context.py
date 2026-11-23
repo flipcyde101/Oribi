@@ -216,7 +216,7 @@ def _cardinality_lines(context: Any) -> list[_ContextLine]:
         if card.uniqueness_ratio is None:
             line += "; no observed values"
         else:
-            line += f" ({card.uniqueness_ratio:.0%} of observed rows unique)"
+            line += f" ({card.uniqueness_ratio:.0%} distinct values / non-missing rows)"
             line += f"; {card.observed_count:,} non-missing"
             line += f"; {card.missing_count:,} missing ({card.missing_rate:.0%})"
             line += f"; average {card.average_records_per_value:.2f} records/value"

@@ -21,6 +21,39 @@ def test_serialization_outputs(sales_frame):
     assert "DATASET" in compact
 
 
+@pytest.mark.parametrize(
+    ("values", "observed_count", "ratio"),
+    [
+        ([True, True, False, False], 4, 0.5),
+        ([True, True, False, None, None], 3, 2 / 3),
+    ],
+    ids=["repeated-boolean", "masked-rows"],
+)
+def test_compact_cardinality_describes_distinct_value_ratio(values, observed_count, ratio):
+    context = inspect(pd.DataFrame({"active": pd.array(values, dtype="boolean")}))
+    card = context.columns[0].cardinality
+    assert card is not None
+    assert card.unique_count == 2
+    assert card.observed_count == observed_count
+    assert card.uniqueness_ratio == pytest.approx(ratio)
+
+    prefix = f"- active: 2 unique / {len(values)} rows"
+    line = next(line for line in context.to_context().splitlines() if line.startswith(prefix))
+    assert line.startswith(
+        f"{prefix} ({card.uniqueness_ratio:.0%} distinct values / non-missing rows)"
+        f"; {observed_count} non-missing"
+    )
+
+
+def test_compact_cardinality_preserves_no_observed_values():
+    context = inspect(pd.DataFrame({"active": pd.array([None, None], dtype="boolean")}))
+    card = context.columns[0].cardinality
+    assert card is not None
+    assert card.observed_count == 0
+    assert card.uniqueness_ratio is None
+    assert "- active: 0 unique / 2 rows; no observed values" in context.to_context().splitlines()
+
+
 def test_context_renderers_use_scannable_hierarchy_and_compact_columns(sales_frame):
     context = inspect(sales_frame)
     compact = context.to_context()
