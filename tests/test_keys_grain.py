@@ -169,3 +169,69 @@ def test_unique_scalar_key_still_verifies_alongside_unhashable_dict_column():
     ]
     assert context.grain.status == "estimated"
     assert context.grain.columns == ("record_id",)
+
+
+def test_independently_unique_native_timestamps_leave_grain_undetermined():
+    dates = pd.date_range("2025-01-01", periods=10, freq="D", tz="UTC")
+    frame = pd.DataFrame({"opened_at": dates, "closed_at": dates + pd.Timedelta(hours=4)})
+    forward = inspect(frame)
+    reverse = inspect(frame[["closed_at", "opened_at"]])
+
+    assert forward.grain == reverse.grain
+    assert forward.grain.status == "undetermined"
+    assert forward.grain.columns == ()
+    assert forward.grain.confidence == 0.0
+    evidence, = forward.grain.evidence
+    assert evidence.code == "ambiguous_temporal_grain"
+    assert tuple(evidence.details["columns"]) == ("closed_at", "opened_at")
+    assert evidence.statement in forward.to_markdown()
+    assert evidence.code in forward.to_json()
+    assert "Unknown" in forward.to_context()
+    assert forward.candidate_keys[0].verified_unique
+    assert inspect(frame.assign(region=list("abcdefghij"))).grain == forward.grain
+
+
+def test_single_unique_native_timestamp_supports_grain():
+    dates = pd.date_range("2025-01-01", periods=10, freq="D")
+    grain = inspect(pd.DataFrame({"opened_at": dates})).grain
+    assert grain.status == "estimated"
+    assert grain.columns == ("opened_at",)
+    assert grain.evidence[0].code == "unique_temporal_observations"
+
+
+def test_identifier_resolves_ambiguity_between_unique_timestamps():
+    dates = pd.date_range("2025-01-01", periods=10, freq="D")
+    frame = pd.DataFrame({
+        "opened_at": dates,
+        "closed_at": dates + pd.Timedelta(hours=4),
+        "record_id": range(10),
+    })
+    context = inspect(frame)
+    assert context.grain.columns == ("record_id",)
+    assert any(key.columns == ("record_id",) and key.verified_unique for key in context.candidate_keys)
+
+
+def test_joint_entity_time_grain_resolves_ambiguity_between_unique_timestamps():
+    dates = pd.date_range("2025-01-01", periods=10, freq="h")
+    frame = pd.DataFrame({
+        "opened_at": dates,
+        "closed_at": dates + pd.Timedelta(hours=4),
+        "measured_at": dates.repeat(2)[:10],
+        "device_id": ["A", "B"] * 5,
+    })
+    context = inspect(frame)
+    assert context.grain.status == "estimated"
+    assert context.grain.columns == ("device_id", "measured_at")
+
+
+def test_repeated_and_missing_timestamps_do_not_count_as_individually_unique():
+    dates = pd.date_range("2025-01-01", periods=10, freq="D")
+    frame = pd.DataFrame({
+        "opened_at": dates,
+        "repeated_at": dates.repeat(2)[:10],
+        "missing_at": pd.Series(dates).mask(pd.RangeIndex(10) == 0),
+    })
+    for other in ("repeated_at", "missing_at"):
+        grain = inspect(frame[["opened_at", other]]).grain
+        assert grain.status == "estimated"
+        assert all(evidence.code != "ambiguous_temporal_grain" for evidence in grain.evidence)

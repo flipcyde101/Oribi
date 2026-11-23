@@ -171,7 +171,7 @@ def detect_keys(
     max_exact_rows: int = 100_000,
     exact_distinct: Mapping[str, bool] | None = None,
 ) -> tuple[tuple[KeyCandidate, ...], GrainContext]:
-    """Collect candidate keys, then independently select a grain hypothesis."""
+    """Collect candidate keys and preserve ambiguity among unique native timestamps."""
     candidates = detect_candidate_keys(
         frame, names, stats, roles,
         max_columns=max_columns,
@@ -179,6 +179,19 @@ def detect_keys(
         exact_distinct=exact_distinct,
     )
     row_count = len(frame)
+    unique_timestamps = sorted(
+        name for name in names
+        if roles.get(name) == "temporal"
+        and pd.api.types.is_datetime64_any_dtype(frame[name].dtype)
+        and (exact_distinct is None or exact_distinct.get(name, True))
+        and stats[name].distinct_count == row_count
+        and stats[name].missing_count == 0
+    )
+    if row_count and len(unique_timestamps) > 1:
+        return candidates, _resolve_temporal_ambiguity(
+            candidates, roles, stats, row_count, unique_timestamps,
+        )
+
     if len(frame) == 0:
         grain = GrainContext(
             "undetermined", None, (), 0.0,
@@ -237,6 +250,39 @@ def detect_keys(
     else:
         grain = _undetermined_grain(frame, max_exact_rows, bool(candidates))
     return candidates, grain
+
+
+def _resolve_temporal_ambiguity(
+    candidates: tuple[KeyCandidate, ...],
+    roles: dict[str, str],
+    stats: Mapping[str, StatisticsContext],
+    row_count: int,
+    unique_timestamps: list[str],
+) -> GrainContext:
+    # Verified pairs supply independent evidence only when both components
+    # repeat and the combination represents an entity observed over time.
+    supported = tuple(
+        candidate for candidate in candidates
+        if candidate.verified_unique and (
+            (candidate.kind == "single" and roles.get(candidate.columns[0]) == "identifier")
+            or (
+                candidate.kind == "composite"
+                and any(roles[name] == "temporal" for name in candidate.columns)
+                and any(roles[name] in {"identifier", "dimension", "categorical"} for name in candidate.columns)
+                and all(stats[name].distinct_count < row_count for name in candidate.columns)
+            )
+        )
+    )
+    if supported:
+        return select_grain(supported, roles)
+    return GrainContext(
+        "undetermined", None, (), 0.0,
+        (Evidence(
+            "ambiguous_temporal_grain",
+            "Multiple native timestamp columns independently distinguish every row",
+            {"columns": unique_timestamps, "row_count": row_count},
+        ),),
+    )
 
 
 def _undetermined_grain(frame: pd.DataFrame, max_exact_rows: int, approximate: bool = False) -> GrainContext:
