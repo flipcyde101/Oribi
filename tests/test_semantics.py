@@ -362,3 +362,26 @@ def test_real_record_id_still_establishes_grain_alongside_period_column():
     assert context.grain.status == "estimated"
     assert context.grain.columns == ("record_id",)
     assert [key.columns for key in context.candidate_keys] == [("record_id",)]
+
+
+@pytest.mark.parametrize("values", [[], [None, None], [5.0]])
+def test_float64_insufficient_observations_do_not_claim_zero_dispersion(values):
+    import pandas as pd
+
+    if not values:
+        series = pd.Series([], dtype="Float64")
+    else:
+        series = pd.Series(values, dtype="Float64")
+    column = inspect(pd.DataFrame({"value": series})).columns[0]
+
+    assert column.statistics.standard_deviation is None
+    assert "constant_numeric_values" not in {e.code for e in column.semantic.evidence}
+
+
+def test_float64_two_equal_observations_retain_zero_dispersion_claim():
+    import pandas as pd
+
+    column = inspect(pd.DataFrame({"value": pd.Series([5.0, 5.0], dtype="Float64")})).columns[0]
+
+    assert column.statistics.standard_deviation == 0
+    assert "constant_numeric_values" in {e.code for e in column.semantic.evidence}

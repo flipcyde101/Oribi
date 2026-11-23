@@ -158,7 +158,8 @@ def infer_semantic(
             measure_score = min(measure_score, .48)
             if "identifier" in votes:
                 votes["identifier"] = min(votes["identifier"], .48)
-            evidence.append(Evidence("constant_numeric_values", "Numeric values have zero dispersion"))
+            if std == 0:
+                evidence.append(Evidence("constant_numeric_values", "Numeric values have zero dispersion"))
         if "identifier" in votes and (negative_count > 0 or has_fractional_values or (is_float and not explicit_identifier_name)):
             # Negative or fractional values conflict with entity identifier semantics.
             votes["identifier"] = round(votes["identifier"] * .60, 2)
