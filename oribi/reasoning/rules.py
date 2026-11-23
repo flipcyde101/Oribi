@@ -5,8 +5,8 @@ from ..models.profile import StatisticsContext
 from .semantic import column_name_words
 
 _NON_ADDITIVE_TOKENS = {
-    "average", "avg", "median", "per", "pct", "percent", "percentage", "percentages",
-    "proportion", "proportions", "rate", "rates", "ratio", "ratios", "share", "shares",
+    "average", "avg", "cagr", "ctr", "median", "per", "pct", "percent", "percentage", "percentages",
+    "proportion", "proportions", "rate", "rates", "ratio", "ratios", "roi", "share", "shares",
 }
 
 

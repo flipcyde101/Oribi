@@ -37,6 +37,51 @@ def test_observed_duplicate_identifiers_still_warn():
     assert any(w.code == "non_unique_identifier" for w in column.warnings)
 
 
+def test_rate_abbreviations_are_non_additive():
+    for name in ("CTR", "ROI", "CAGR"):
+        column = inspect(pd.DataFrame({name: [0.02, 0.03, 0.01, 0.04]})).columns[0]
+        by_operation = {r.operation: r.disposition for r in column.recommendations}
+        assert by_operation["SUM"] == "not_applicable"
+        assert by_operation["MEAN"] == "caution"
+        assert any(e.code == "name_non_additive_hint" for e in (ev for r in column.recommendations for ev in r.evidence))
+
+
+def test_rate_abbreviations_are_non_additive_only_as_whole_tokens():
+    column = inspect(pd.DataFrame({"ctr_value": [0.02, 0.03, 0.01, 0.04]})).columns[0]
+    by_operation = {r.operation: r.disposition for r in column.recommendations}
+    assert by_operation["SUM"] == "not_applicable"
+
+    column = inspect(pd.DataFrame({"contract": [0.02, 0.03, 0.01, 0.04]})).columns[0]
+    by_operation = {r.operation: r.disposition for r in column.recommendations}
+    assert by_operation["SUM"] == "recommended"
+
+
+def test_additive_control_retains_sum_recommendation():
+    column = inspect(pd.DataFrame({"cost": [2.5, 3.7, 4.5, 5.5]})).columns[0]
+    by_operation = {r.operation: r.disposition for r in column.recommendations}
+    assert by_operation["SUM"] == "recommended"
+    assert by_operation["MEAN"] == "recommended"
+
+
+def test_rate_abbreviations_omit_derived_totals():
+    frame = pd.DataFrame({
+        "CTR": [0.02, 0.03, 0.01, 0.04],
+        "ROI": [0.15, 0.20, 0.10, 0.02],
+        "CAGR": [0.03, 0.20, 0.30, 0.10],
+        "cost": [2.5, 3.7, 4.5, 5.5],
+    })
+    metric_names = {metric.name for metric in inspect(frame).metrics}
+    assert "total_cost" in metric_names
+    assert not {"total_ctr", "total_roi", "total_cagr"} & metric_names
+
+
+def test_rate_abbreviation_embedded_in_word_stays_additive():
+    column = inspect(pd.DataFrame({"production_ctrvalue": [0.02, 0.03, 0.01, 0.04]})).columns[0]
+    by_operation = {r.operation: r.disposition for r in column.recommendations}
+    assert by_operation["SUM"] == "recommended"
+    assert by_operation["MEAN"] == "recommended"
+
+
 def test_identifier_recommends_count_distinct_and_flags_inappropriate_operations():
     context = inspect(pd.DataFrame({"user_id": ["u1", "u2", "u3", "u4"]}))
     col = context.columns[0]
