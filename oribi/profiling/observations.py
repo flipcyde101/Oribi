@@ -62,7 +62,8 @@ class AnalysisSession:
         elif getattr(series.dtype, "kind", None) == "m":
             # Elapsed durations (timedelta64) are neither identifiers nor measures here.
             logical = "duration"
-        elif isinstance(series.dtype, pd.CategoricalDtype):
+        elif isinstance(series.dtype, (pd.CategoricalDtype, pd.IntervalDtype)):
+            # Native interval bins are grouping labels without a dtype conversion.
             logical = "categorical"
         elif isinstance(series.dtype, pd.PeriodDtype):
             # Native Period columns represent calendar intervals rather than

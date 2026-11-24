@@ -294,6 +294,45 @@ def test_camelcase_and_acronym_identifier_names():
     assert column_name_words("sales_category_code_v1") == ["sales", "category", "code"]
 
 
+@pytest.mark.parametrize("categorical", [False, True], ids=["native", "categorical"])
+def test_distinct_interval_bins_recommend_grouping_without_entity_metrics(categorical):
+    import pandas as pd
+
+    bins = pd.arrays.IntervalArray.from_breaks([0, 10, 20, 30])
+    values = pd.Categorical(bins) if categorical else bins
+    frame = pd.DataFrame({"price_band": values})
+    expected = frame.copy()
+
+    context = inspect(frame)
+    column = context.get_column("price_band")
+
+    assert column.dtype == str(values.dtype)
+    assert column.logical_type == column.semantic.role == "categorical"
+    assert "categorical_dtype" in {e.code for e in column.semantic.evidence}
+    advice = {(rec.operation, rec.disposition) for rec in column.recommendations}
+    assert ("GROUP BY", "recommended") in advice
+    assert ("COUNT DISTINCT", "useful") in advice
+    assert not context.metrics
+    pd.testing.assert_frame_equal(frame, expected)
+
+
+@pytest.mark.parametrize("categorical", [False, True], ids=["native", "categorical"])
+def test_repeated_interval_bins_count_only_observed_non_missing_values(categorical):
+    import pandas as pd
+
+    bins = pd.IntervalIndex.from_breaks([0.0, 10.0, 20.0, 30.0], closed="left")
+    labels = [bins[1], bins[0], None, bins[0]]
+    values = pd.Categorical(labels, categories=bins) if categorical else pd.arrays.IntervalArray(labels)
+    column = inspect(pd.DataFrame({"price_band": values})).get_column("price_band")
+
+    assert column.dtype == str(values.dtype)
+    assert column.statistics.missing_count == 1
+    assert column.statistics.distinct_count == 2
+    assert column.categories is not None
+    assert column.categories.values == ((bins[0], 2), (bins[1], 1))
+    assert column.categories.is_complete
+
+
 def test_distinct_period_column_gets_temporal_role_without_becoming_identifier_or_grain():
     import pandas as pd
 

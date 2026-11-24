@@ -176,7 +176,7 @@ def infer_semantic(
         evidence.append(Evidence("boolean_dtype", "Column has a boolean dtype"))
     elif logical_type == "categorical":
         votes["categorical"] = .78
-        evidence.append(Evidence("categorical_dtype", "Column has a categorical dtype"))
+        evidence.append(Evidence("categorical_dtype", "Column dtype supports categorical grouping"))
     elif logical_type == "text":
         if rate > .5 and distinct > 20:
             votes["text"] = .62
