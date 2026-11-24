@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from oribi import ProfileOptions, inspect
 
@@ -59,6 +60,52 @@ def test_composite_candidate_is_detected_without_single_key():
     context = inspect(frame)
     assert [key.columns for key in context.candidate_keys] == [("order_id", "product_id")]
     assert context.grain.columns == ("order_id", "product_id")
+
+
+@pytest.fixture
+def near_unique_order_frame():
+    return pd.DataFrame({
+        "order_id": [*range(99), 0],
+        "warehouse": ["west", "east"] * 49 + ["west", "north"],
+    })
+
+
+@pytest.mark.parametrize("columns", [["order_id", "warehouse"], ["warehouse", "order_id"]],
+                         ids=["forward", "reversed"])
+def test_near_unique_single_can_form_verified_grain_at_row_cap(near_unique_order_frame, columns):
+    context = inspect(near_unique_order_frame[columns], options=ProfileOptions(max_exact_rows=100))
+    assert [(key.columns, key.verified_unique) for key in context.candidate_keys] == [
+        (("order_id",), False),
+        (("order_id", "warehouse"), True),
+    ]
+    assert context.grain.status == "estimated"
+    assert context.grain.columns == ("order_id", "warehouse")
+
+
+def test_pair_with_near_unique_single_is_skipped_above_row_cap(near_unique_order_frame):
+    context = inspect(near_unique_order_frame, options=ProfileOptions(max_exact_rows=99))
+    assert [(key.columns, key.verified_unique) for key in context.candidate_keys] == [
+        (("order_id",), False),
+    ]
+    assert context.grain.status == "undetermined"
+    assert context.grain.evidence[0].code == "key_search_bounded"
+
+
+def test_bounded_pair_search_prioritizes_near_unique_over_redundant_columns(near_unique_order_frame):
+    frame = near_unique_order_frame.assign(
+        aisle=["front", "back"] * 50,
+        line_id=range(100),
+        zone=["red", "blue"] * 49 + ["red", "green"],
+    )
+    # Prune line_id before the cap, rank warehouse ahead of aisle by distinctness,
+    # and break the warehouse/zone tie by name rather than input order.
+    context = inspect(frame.iloc[:, ::-1], options=ProfileOptions(max_key_columns=2))
+    assert [(key.columns, key.verified_unique) for key in context.candidate_keys] == [
+        (("line_id",), True),
+        (("order_id",), False),
+        (("order_id", "warehouse"), True),
+    ]
+    assert context.grain.columns == ("line_id",)
 
 
 def test_candidate_set_and_ranking_ignore_dataframe_column_order():
