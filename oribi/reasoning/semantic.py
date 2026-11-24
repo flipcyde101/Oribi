@@ -41,6 +41,7 @@ def infer_semantic(
     row_count: int,
     *,
     has_fractional_values: bool,
+    is_bool_dtype: bool,
     is_float: bool = False,
     date_evidence: Evidence | None = None,
 ) -> SemanticContext:
@@ -173,7 +174,10 @@ def infer_semantic(
         evidence.append(date_evidence)
     elif logical_type == "boolean":
         votes["boolean"] = .9
-        evidence.append(Evidence("boolean_dtype", "Column has a boolean dtype"))
+        if is_bool_dtype:
+            evidence.append(Evidence("boolean_dtype", "Column has a boolean dtype"))
+        else:
+            evidence.append(Evidence("boolean_values", "Observed non-missing values are boolean"))
     elif logical_type == "categorical":
         votes["categorical"] = .78
         evidence.append(Evidence("categorical_dtype", "Column has a categorical dtype"))

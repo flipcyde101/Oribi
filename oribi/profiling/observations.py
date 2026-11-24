@@ -78,6 +78,8 @@ class AnalysisSession:
             kind = "empty" if values.empty else pd.api.types.infer_dtype(values, skipna=False)
             if kind == "empty":
                 logical = "unknown"
+            elif kind == "boolean":
+                logical = "boolean"
             elif kind in {"integer", "floating", "mixed-integer-float"}:
                 logical = "numeric"
             elif kind == "string":

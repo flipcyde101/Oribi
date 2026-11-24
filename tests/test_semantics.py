@@ -12,6 +12,40 @@ def test_roles_have_evidence(sales_frame):
     assert roles["order_id"].evidence
 
 
+@pytest.mark.parametrize(("dtype", "values", "missing_count", "evidence_code"), [
+    ("object", [True, False, None, True], 1, "boolean_values"),
+    ("bool", [True, False, True, False], 0, "boolean_dtype"),
+    ("boolean", [True, False, None, True], 1, "boolean_dtype"),
+])
+def test_boolean_flags_keep_stored_dtype(dtype, values, missing_count, evidence_code):
+    import pandas as pd
+
+    frame = pd.DataFrame({"is_active": pd.Series(values, dtype=dtype)})
+    original = frame.copy()
+    column = inspect(frame).get_column("is_active")
+
+    assert column.dtype == dtype
+    assert column.logical_type == column.semantic.role == "boolean"
+    assert column.statistics.missing_count == missing_count
+    codes = {e.code for e in column.semantic.evidence}
+    assert codes & {"boolean_dtype", "boolean_values"} == {evidence_code}
+    pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("values", [
+    pytest.param([True, False, None, True, "true"], id="bool-string"),
+    pytest.param([True, False, None, True, 1], id="bool-int"),
+    pytest.param([None, None], id="all-missing"),
+])
+def test_object_flags_without_a_boolean_domain_remain_unknown(values):
+    import pandas as pd
+
+    frame = pd.DataFrame({"is_active": pd.Series(values, dtype=object)})
+    column = inspect(frame).get_column("is_active")
+
+    assert column.logical_type == column.semantic.role == "unknown"
+
+
 def test_numeric_low_cardinality_can_be_dimension():
     context = inspect(__import__("pandas").DataFrame({"rating": [1, 2, 1, 3, 2]}))
     assert context.columns[0].semantic.role == "dimension"
