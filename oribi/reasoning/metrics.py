@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from ..models.context import ColumnContext
 from ..models.evidence import Evidence, GrainContext, MetricDefinition, RelationshipContext
@@ -325,6 +325,31 @@ def _dedup_caveat(
     )
 
 
+def _unchecked_grain_caveat(m_col: ColumnContext, skip_reason: str) -> str:
+    if skip_reason == "max_exact_rows":
+        return (
+            f"{m_col.name} was not checked for repeated higher-grain values because "
+            "the dataset exceeds max_exact_rows; verify entity grain before summing "
+            "across repeated identifiers."
+        )
+    if skip_reason == "zero_relationship_columns":
+        return (
+            f"{m_col.name} was not checked for repeated higher-grain values because "
+            "max_relationship_columns is 0; verify entity grain before summing "
+            "across repeated identifiers."
+        )
+    if skip_reason == "max_relationship_columns":
+        return (
+            f"{m_col.name} was not checked for repeated higher-grain values because "
+            "max_relationship_columns limited the metric-grain scan; verify entity "
+            "grain before summing across repeated identifiers."
+        )
+    return (
+        f"{m_col.name} could not be checked for repeated higher-grain values across "
+        "all repeated identifiers; verify entity grain before summing."
+    )
+
+
 def _dedup_evidence(m_col: ColumnContext, det_col: ColumnContext, row_count: int) -> Evidence:
     return Evidence(
         "measure_constant_per_entity",
@@ -535,6 +560,7 @@ def _infer_measure_totals(
     *,
     grain_cols: set[str],
     constant_measures: frozenset[tuple[str, str]],
+    unverified_measures: Mapping[str, str],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
@@ -599,7 +625,12 @@ def _infer_measure_totals(
         else:
             sql = f"SUM({_sql_col(m_col.name)})"
             rationale = f"Sums additive measure {m_col.name} across observed rows."
-            caveats = base_caveats
+            skip_reason = unverified_measures.get(m_col.name)
+            caveats = (
+                _merge_caveats(base_caveats, _unchecked_grain_caveat(m_col, skip_reason))
+                if skip_reason is not None
+                else base_caveats
+            )
             columns = (m_col.name,)
         priority_tier = 1 if named_measure else 2
         results.append(
@@ -631,6 +662,7 @@ def _infer_measure_per_entity(
     one_to_many_cols: set[str],
     constant_measures: frozenset[tuple[str, str]],
     entity_determinants: frozenset[tuple[str, str]],
+    unverified_measures: Mapping[str, str],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
@@ -788,6 +820,7 @@ def _infer_measure_per_entity(
             else:
                 id_sql = _sql_col(id_col.name)
                 m_sql = _sql_col(m_col.name)
+                per_entity_caveats: list[str] = []
                 if id_col.statistics.missing_count > 0:
                     sum_expr = (
                         f"SUM(CASE WHEN {id_sql} IS NOT NULL THEN {m_sql} END)"
@@ -800,13 +833,10 @@ def _infer_measure_per_entity(
                         f"summing {m_col.name} only for rows where {id_col.name} is known "
                         f"and excluding rows where {id_col.name} is NULL."
                     )
-                    caveats = _merge_caveats(
-                        base_caveats,
-                        (
-                            f"Rows missing {id_col.name} are excluded from the {m_col.name} "
-                            f"numerator to avoid inflating the per-{stem} average "
-                            f"(even when the missing rate is below any general warning threshold)."
-                        ),
+                    per_entity_caveats.append(
+                        f"Rows missing {id_col.name} are excluded from the {m_col.name} "
+                        f"numerator to avoid inflating the per-{stem} average "
+                        f"(even when the missing rate is below any general warning threshold)."
                     )
                 else:
                     sql = f"{_sql_sum_numerator(m_col)} / NULLIF(COUNT(DISTINCT {id_sql}), 0)"
@@ -814,7 +844,10 @@ def _infer_measure_per_entity(
                         f"Computes total {m_col.name} per distinct {id_col.name} "
                         "using NULLIF to avoid division by zero."
                     )
-                    caveats = base_caveats
+                skip_reason = unverified_measures.get(m_col.name)
+                if skip_reason is not None:
+                    per_entity_caveats.append(_unchecked_grain_caveat(m_col, skip_reason))
+                caveats = _merge_caveats(base_caveats, *per_entity_caveats)
 
             results.append(
                 (
@@ -995,6 +1028,7 @@ def _build_measure_ratio(
     *,
     grain_cols: set[str],
     constant_measures: frozenset[tuple[str, str]],
+    unverified_measures: Mapping[str, str],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> _Candidate:
@@ -1024,7 +1058,12 @@ def _build_measure_ratio(
     den_sql = _sql_col(denominator.name)
     if num_det is None and den_det is None:
         sql = f"{_sql_sum_numerator(numerator)} / NULLIF(SUM({den_sql}), 0)"
-        caveats = base_caveats
+        ratio_caveats = [
+            _unchecked_grain_caveat(m_col, skip_reason)
+            for m_col in (numerator, denominator)
+            if (skip_reason := unverified_measures.get(m_col.name)) is not None
+        ]
+        caveats = _merge_caveats(base_caveats, *ratio_caveats)
     elif num_det is not None and den_det is not None and num_det.name == den_det.name:
         alias = _cte_alias("per", num_det.name)
         det_sql = _sql_col(num_det.name)
@@ -1061,6 +1100,9 @@ def _build_measure_ratio(
             extra_caveats.append(_dedup_caveat(numerator, num_det))
         else:
             num_select = f"(SELECT SUM({num_sql}) FROM dataset)"
+            num_skip = unverified_measures.get(numerator.name)
+            if num_skip is not None:
+                extra_caveats.append(_unchecked_grain_caveat(numerator, num_skip))
         if den_det is not None:
             den_alias = _cte_alias("den_per", den_det.name)
             den_det_sql = _sql_col(den_det.name)
@@ -1073,6 +1115,9 @@ def _build_measure_ratio(
             extra_caveats.append(_dedup_caveat(denominator, den_det))
         else:
             den_select = f"(SELECT SUM({den_sql}) FROM dataset)"
+            den_skip = unverified_measures.get(denominator.name)
+            if den_skip is not None:
+                extra_caveats.append(_unchecked_grain_caveat(denominator, den_skip))
         float_prefix = "" if _is_float_column(numerator) else "1.0 * "
         sql = f"WITH {', '.join(ctes)} SELECT {float_prefix}{num_select} / NULLIF({den_select}, 0)"
         caveats = _merge_caveats(base_caveats, *extra_caveats)
@@ -1099,6 +1144,7 @@ def _infer_measure_ratios(
     *,
     grain_cols: set[str],
     constant_measures: frozenset[tuple[str, str]],
+    unverified_measures: Mapping[str, str],
     row_count: int,
     has_duplicate_rows: bool,
 ) -> list[_Candidate]:
@@ -1140,6 +1186,7 @@ def _infer_measure_ratios(
                 col_by_name,
                 grain_cols=grain_cols,
                 constant_measures=constant_measures,
+                unverified_measures=unverified_measures,
                 row_count=row_count,
                 has_duplicate_rows=has_duplicate_rows,
             )
@@ -1168,6 +1215,7 @@ def _infer_measure_ratios(
                 col_by_name,
                 grain_cols=grain_cols,
                 constant_measures=constant_measures,
+                unverified_measures=unverified_measures,
                 row_count=row_count,
                 has_duplicate_rows=has_duplicate_rows,
             )
@@ -1187,6 +1235,9 @@ def infer_metrics(
     entity_determinants: frozenset[tuple[str, str]] = frozenset(),
     multi_parent_pairs: frozenset[tuple[str, str]] = frozenset(),
     partially_covered_measures: frozenset[str] = frozenset(),
+    metric_grain_skip_reason: str | None = None,
+    unchecked_measures: Sequence[tuple[str, str]] = (),
+    has_unsupported_repeating_id: bool = False,
 ) -> tuple[MetricDefinition, ...]:
     """Infer conservative, evidence-backed analytical metric definitions.
 
@@ -1257,6 +1308,14 @@ def infer_metrics(
     fully_covered_measures = {measure for _, measure in frozen_constant_measures}
     ambiguous_measures = partially_covered_measures - fully_covered_measures
     additive_measures = [col for col in additive_measures if col.name not in ambiguous_measures]
+    unverified_measures: dict[str, str] = dict(unchecked_measures)
+    has_repeating_ids = bool(repeating_id_names) or has_unsupported_repeating_id
+    if metric_grain_skip_reason is not None and has_repeating_ids:
+        for col in additive_measures:
+            unverified_measures.setdefault(col.name, metric_grain_skip_reason)
+    elif has_unsupported_repeating_id:
+        for col in additive_measures:
+            unverified_measures.setdefault(col.name, "unsupported")
 
     candidates: list[_Candidate] = [
         *_infer_entity_counts(
@@ -1272,6 +1331,7 @@ def infer_metrics(
             col_by_name,
             grain_cols=grain_cols,
             constant_measures=frozen_constant_measures,
+            unverified_measures=unverified_measures,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
@@ -1284,6 +1344,7 @@ def infer_metrics(
             one_to_many_cols=one_to_many_cols,
             constant_measures=frozen_constant_measures,
             entity_determinants=frozen_determinants,
+            unverified_measures=unverified_measures,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
@@ -1300,6 +1361,7 @@ def infer_metrics(
             col_by_name,
             grain_cols=grain_cols,
             constant_measures=frozen_constant_measures,
+            unverified_measures=unverified_measures,
             row_count=row_count,
             has_duplicate_rows=has_duplicate_rows,
         ),
