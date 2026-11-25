@@ -44,6 +44,40 @@ def test_decimal_prices_have_numeric_statistics_and_measure_semantics(repeat):
     assert all(type(value) is Decimal for value in frame["price"].dropna())
 
 
+def test_arrow_decimal_quartiles_preserve_profile_values():
+    pa = pytest.importorskip("pyarrow")
+    amounts = [Decimal("1.25"), Decimal("2.50"), Decimal("3.75")]
+    dtype = pd.ArrowDtype(pa.decimal128(6, 2))
+    frame = pd.DataFrame({"amount": pd.Series([*amounts, None], dtype=dtype)})
+    original = frame.copy()
+    disabled = inspect(frame, options=ProfileOptions(include_quantiles=False)).get_column("amount")
+    assert disabled.statistics.mean == 2.5
+    assert not disabled.statistics.quantiles
+
+    object_frame = pd.DataFrame({"amount": pd.Series([*amounts, None], dtype=object)})
+    expected = inspect(object_frame).get_column("amount").statistics.quantiles
+    column = inspect(frame).get_column("amount")
+    stats = column.statistics
+    assert stats.quantiles == expected == {"0.25": 1.875, "0.5": 2.5, "0.75": 3.125}
+    for profile in (column, disabled):
+        assert profile.dtype == str(dtype)
+        assert profile.logical_type == "numeric"
+        assert profile.statistics.missing_count == 1
+        assert isinstance(profile.statistics.minimum, Decimal)
+        assert isinstance(profile.statistics.maximum, Decimal)
+        assert profile.statistics.minimum == amounts[0]
+        assert profile.statistics.maximum == amounts[-1]
+        assert dict(profile.statistics.top_values) == dict.fromkeys(amounts, 1)
+        assert all(isinstance(value, Decimal) for value, _ in profile.statistics.top_values)
+    pd.testing.assert_frame_equal(frame, original)
+
+
+def test_numeric_quantiles_without_finite_values_are_empty():
+    frame = pd.DataFrame({"amount": [float("-inf"), float("inf"), None]})
+    column = inspect(frame).get_column("amount")
+    assert column.statistics.quantiles == {}
+
+
 def test_decimal_numeric_moments_exclude_infinities():
     series = pd.Series(
         [Decimal("-Infinity"), Decimal("1.5"), Decimal("2.5"), Decimal("Infinity"), Decimal("NaN")],

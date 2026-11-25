@@ -178,8 +178,14 @@ def profile_column(
             values["zero_count"] = int((numeric == 0).sum())
             values["negative_count"] = int((numeric < 0).sum())
             if include_quantiles:
+                # Decimal interpolation cannot multiply by floating-point weights.
+                quantile_sample = (
+                    sample.astype("float64")
+                    if len(sample) and isinstance(sample.iloc[0], Decimal)
+                    else sample
+                )
                 values["quantiles"] = (
-                    {str(q): finite_or_none(v) for q, v in sample.quantile([.25, .5, .75]).items()}
+                    {str(q): finite_or_none(v) for q, v in quantile_sample.quantile([.25, .5, .75]).items()}
                     if len(sample) else {}
                 )
             if len(sample) >= 3 and sample.nunique() > 1:
