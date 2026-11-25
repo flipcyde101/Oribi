@@ -768,3 +768,139 @@ def test_compact_context_preserves_escaped_double_quote_in_metric_identifier():
     assert rendered in compact
     assert 'SUM("col""quote")' in compact
     assert len(compact) <= 5000
+
+
+def test_deduplicated_per_entity_and_ratio_metrics_declare_grouping_dependencies():
+    df = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", "a", "a", "a", "b", "b"],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+            "profit": [2.0, 2.0, 6.0, 6.0, 12.0, 12.0],
+            "quantity": [1, 2, 3, 4, 5, 6],
+        }
+    )
+    context = inspect(df)
+    by_name = {metric.name: metric for metric in context.metrics}
+
+    expected_dependencies = {
+        "revenue_per_customer": (("revenue", "customer_id", "order_id"), 30.0),
+        "profit_margin": (("profit", "revenue", "order_id"), 1.0 / 3.0),
+        "revenue_per_unit": (("revenue", "quantity", "order_id"), 60.0 / 21.0),
+    }
+    for name, (expected_cols, expected_val) in expected_dependencies.items():
+        metric = by_name[name]
+        assert metric.columns == expected_cols
+        with sqlite3.connect(":memory:") as full_db:
+            df.to_sql("dataset", full_db, index=False)
+            full_row = full_db.execute(metric.sql).fetchone()
+        with sqlite3.connect(":memory:") as proj_db:
+            df[list(metric.columns)].to_sql("dataset", proj_db, index=False)
+            proj_row = proj_db.execute(metric.sql).fetchone()
+        assert full_row is not None and proj_row is not None
+        assert proj_row[0] == pytest.approx(expected_val)
+        assert proj_row[0] == pytest.approx(full_row[0])
+
+    # When the deduplication key is already the target entity, do not duplicate it.
+    aov = by_name["average_order_value"]
+    assert aov.columns == ("revenue", "order_id")
+    assert by_name["profit_per_order"].columns == ("profit", "order_id")
+    assert by_name["quantity_per_order"].columns == ("quantity", "order_id")
+
+    payload_by_name = {item["name"]: item for item in context.to_dict()["metrics"]}
+    json_by_name = {item["name"]: item for item in json.loads(context.to_json())["metrics"]}
+    for metric in context.metrics:
+        assert len(metric.columns) == len(set(metric.columns))
+        assert _eval_sql(df[list(metric.columns)], metric.sql) == pytest.approx(
+            _eval_sql(df, metric.sql)
+        )
+        assert payload_by_name[metric.name]["columns"] == list(metric.columns)
+        assert json_by_name[metric.name]["columns"] == list(metric.columns)
+
+
+def test_ratio_and_per_entity_dependency_variants_and_non_dedup_controls():
+    # One-sided denominator determinant: profit varies by line, revenue is order-level.
+    den_dedup_df = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "profit": [1.0, 3.0, 2.0, 4.0, 5.0, 7.0],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+        }
+    )
+    den_ctx = inspect(den_dedup_df)
+    den_margin = _metric(den_ctx, "profit_margin")
+    assert den_margin.columns == ("profit", "revenue", "order_id")
+    assert _eval_sql(den_dedup_df[list(den_margin.columns)], den_margin.sql) == pytest.approx(
+        22.0 / 60.0
+    )
+    assert _eval_sql(den_dedup_df[list(den_margin.columns)], den_margin.sql) == pytest.approx(
+        _eval_sql(den_dedup_df, den_margin.sql)
+    )
+    den_exported = next(m for m in den_ctx.to_dict()["metrics"] if m["name"] == "profit_margin")
+    assert den_exported["columns"] == ["profit", "revenue", "order_id"]
+
+    # Two distinct determinants (order_id vs customer_id) and unmapped coarser-grain average.
+    multi_det_df = pd.DataFrame(
+        {
+            "customer_id": ["c1", "c1", "c1", "c1", "c2", "c2", "c2", "c2"],
+            "order_id": [101, 101, 102, 102, 103, 103, 104, 104],
+            "profit": [5.0, 5.0, 7.0, 7.0, 8.0, 8.0, 10.0, 10.0],
+            "revenue": [100.0, 100.0, 100.0, 100.0, 200.0, 200.0, 200.0, 200.0],
+            "quantity": [1, 2, 3, 4, 5, 6, 7, 8],
+        }
+    )
+    multi_ctx = inspect(multi_det_df)
+    multi_margin = _metric(multi_ctx, "profit_margin")
+    assert multi_margin.columns == ("profit", "revenue", "order_id", "customer_id")
+    assert _eval_sql(multi_det_df[list(multi_margin.columns)], multi_margin.sql) == pytest.approx(
+        0.1
+    )
+
+    multi_rpu = _metric(multi_ctx, "revenue_per_unit")
+    assert multi_rpu.columns == ("revenue", "quantity", "customer_id")
+    assert _eval_sql(multi_det_df[list(multi_rpu.columns)], multi_rpu.sql) == pytest.approx(
+        300.0 / 36.0
+    )
+
+    multi_aov = _metric(multi_ctx, "average_order_value")
+    assert multi_aov.columns == ("revenue", "order_id", "customer_id")
+    assert _eval_sql(multi_det_df[list(multi_aov.columns)], multi_aov.sql) == pytest.approx(75.0)
+
+    multi_payload = {m["name"]: m for m in multi_ctx.to_dict()["metrics"]}
+    for metric in multi_ctx.metrics:
+        assert len(metric.columns) == len(set(metric.columns))
+        assert _eval_sql(multi_det_df[list(metric.columns)], metric.sql) == pytest.approx(
+            _eval_sql(multi_det_df, metric.sql)
+        )
+        assert multi_payload[metric.name]["columns"] == list(metric.columns)
+
+    # Ordinary ratios and per-entity averages without deduplication keep base columns and SQL.
+    plain_df = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2],
+            "customer_id": ["a", "a", "b", "b"],
+            "revenue": [10.0, 15.0, 20.0, 25.0],
+            "profit": [2.0, 3.0, 4.0, 5.0],
+            "quantity": [1, 2, 3, 4],
+        }
+    )
+    plain_ctx = inspect(plain_df)
+    plain_rpc = _metric(plain_ctx, "revenue_per_customer")
+    assert plain_rpc.sql == "SUM(revenue) / NULLIF(COUNT(DISTINCT customer_id), 0)"
+    assert plain_rpc.columns == ("revenue", "customer_id")
+
+    plain_margin = _metric(plain_ctx, "profit_margin")
+    assert plain_margin.sql == "SUM(profit) / NULLIF(SUM(revenue), 0)"
+    assert plain_margin.columns == ("profit", "revenue")
+
+    plain_rpu = _metric(plain_ctx, "revenue_per_unit")
+    assert plain_rpu.sql == "SUM(revenue) / NULLIF(SUM(quantity), 0)"
+    assert plain_rpu.columns == ("revenue", "quantity")
+
+    plain_payload = {m["name"]: m for m in plain_ctx.to_dict()["metrics"]}
+    for metric in plain_ctx.metrics:
+        assert len(metric.columns) == len(set(metric.columns))
+        assert _eval_sql(plain_df[list(metric.columns)], metric.sql) == pytest.approx(
+            _eval_sql(plain_df, metric.sql)
+        )
+        assert plain_payload[metric.name]["columns"] == list(metric.columns)

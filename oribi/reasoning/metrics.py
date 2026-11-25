@@ -365,6 +365,10 @@ def _pick_measure_determinant(
     )
 
 
+def _dependency_columns(*names: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(names))
+
+
 def _merge_caveats(base: tuple[str, ...], *extra: str) -> tuple[str, ...]:
     merged = list(base)
     seen = set(base)
@@ -733,6 +737,7 @@ def _infer_measure_per_entity(
                 includes_sum=True,
                 has_duplicate_rows=has_duplicate_rows,
             )
+            columns: tuple[str, ...]
             if det_col is not None:
                 alias = _cte_alias("per", det_col.name)
                 det_sql = _sql_col(det_col.name)
@@ -785,6 +790,7 @@ def _infer_measure_per_entity(
                         _dedup_caveat(m_col, det_col, grain_mismatch_with=id_col.name),
                     )
                 evidence.append(_dedup_evidence(m_col, det_col, row_count))
+                columns = _dependency_columns(m_col.name, id_col.name, det_col.name)
             else:
                 id_sql = _sql_col(id_col.name)
                 m_sql = _sql_col(m_col.name)
@@ -815,6 +821,7 @@ def _infer_measure_per_entity(
                         "using NULLIF to avoid division by zero."
                     )
                     caveats = base_caveats
+                columns = _dependency_columns(m_col.name, id_col.name)
 
             results.append(
                 (
@@ -824,7 +831,7 @@ def _infer_measure_per_entity(
                         label=label,
                         kind="measure_per_entity",
                         sql=sql,
-                        columns=(m_col.name, id_col.name),
+                        columns=columns,
                         confidence=confidence,
                         rationale=rationale,
                         evidence=tuple(evidence),
@@ -1022,9 +1029,11 @@ def _build_measure_ratio(
     )
     num_sql = _sql_col(numerator.name)
     den_sql = _sql_col(denominator.name)
+    columns: tuple[str, ...]
     if num_det is None and den_det is None:
         sql = f"{_sql_sum_numerator(numerator)} / NULLIF(SUM({den_sql}), 0)"
         caveats = base_caveats
+        columns = _dependency_columns(numerator.name, denominator.name)
     elif num_det is not None and den_det is not None and num_det.name == den_det.name:
         alias = _cte_alias("per", num_det.name)
         det_sql = _sql_col(num_det.name)
@@ -1046,9 +1055,11 @@ def _build_measure_ratio(
             _dedup_caveat(numerator, num_det),
             _dedup_caveat(denominator, den_det),
         )
+        columns = _dependency_columns(numerator.name, denominator.name, num_det.name, den_det.name)
     else:
         ctes: list[str] = []
         extra_caveats: list[str] = []
+        det_names: list[str] = []
         if num_det is not None:
             num_alias = _cte_alias("num_per", num_det.name)
             num_det_sql = _sql_col(num_det.name)
@@ -1059,6 +1070,7 @@ def _build_measure_ratio(
             num_select = f"(SELECT SUM(measure_value) FROM {num_alias})"
             evidence_list.append(_dedup_evidence(numerator, num_det, row_count))
             extra_caveats.append(_dedup_caveat(numerator, num_det))
+            det_names.append(num_det.name)
         else:
             num_select = f"(SELECT SUM({num_sql}) FROM dataset)"
         if den_det is not None:
@@ -1071,11 +1083,13 @@ def _build_measure_ratio(
             den_select = f"(SELECT SUM(measure_value) FROM {den_alias})"
             evidence_list.append(_dedup_evidence(denominator, den_det, row_count))
             extra_caveats.append(_dedup_caveat(denominator, den_det))
+            det_names.append(den_det.name)
         else:
             den_select = f"(SELECT SUM({den_sql}) FROM dataset)"
         float_prefix = "" if _is_float_column(numerator) else "1.0 * "
         sql = f"WITH {', '.join(ctes)} SELECT {float_prefix}{num_select} / NULLIF({den_select}, 0)"
         caveats = _merge_caveats(base_caveats, *extra_caveats)
+        columns = _dependency_columns(numerator.name, denominator.name, *det_names)
 
     return (
         (0, -confidence, name),
@@ -1084,7 +1098,7 @@ def _build_measure_ratio(
             label=label,
             kind="measure_ratio",
             sql=sql,
-            columns=(numerator.name, denominator.name),
+            columns=columns,
             confidence=confidence,
             rationale=rationale,
             evidence=tuple(evidence_list),
