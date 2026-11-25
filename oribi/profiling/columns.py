@@ -183,7 +183,7 @@ def profile_column(
                     if len(sample) else {}
                 )
             if len(sample) >= 3 and sample.nunique() > 1:
-                values["skewness"] = finite_or_none(sample.skew())
+                values["skewness"] = finite_or_none(dispersion_sample.skew())
     elif obs.logical_type == "temporal" and len(non_null):
         values["minimum"] = non_null.min()
         values["maximum"] = non_null.max()
