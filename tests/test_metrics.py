@@ -1017,3 +1017,38 @@ def test_partial_column_limit_and_unsupported_identifiers_disclose_only_affected
         }
     )
     assert _metric(inspect(unsupported_unique_df), "total_revenue").caveats == ()
+
+def test_deduplicated_per_entity_average_excludes_unassigned_groups():
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", None, "b", "b", None, None],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 300.0, 300.0],
+        }
+    )
+    context = inspect(frame)
+    rpc = _metric(context, "revenue_per_customer")
+    total_rev = _metric(context, "total_revenue")
+
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(15.0)
+    assert _eval_sql(frame, total_rev.sql) == pytest.approx(330.0)
+    assert any("exclude" in caveat.lower() for caveat in rpc.caveats), rpc.caveats
+
+def test_deduplicated_per_entity_average_complete_mapping_control():
+    frame = pd.DataFrame(
+        {
+            "order_id": [1, 1, 2, 2, 3, 3],
+            "customer_id": ["a", "a", "b", "b", "c", "c"],
+            "revenue": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+        }
+    )
+    context = inspect(frame)
+    rpc = _metric(context, "revenue_per_customer")
+    total_rev = _metric(context, "total_revenue")
+
+    assert _eval_sql(frame, rpc.sql) == pytest.approx(20.0)
+    assert _eval_sql(frame, total_rev.sql) == pytest.approx(60.0)
+    assert not any(
+        "deduplicated" in caveat.lower() and "excluded" in caveat.lower()
+        for caveat in rpc.caveats
+    ), rpc.caveats

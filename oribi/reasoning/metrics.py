@@ -808,13 +808,26 @@ def _infer_measure_per_entity(
                         f"WITH {alias} AS (SELECT {det_sql}, MAX({id_sql}) AS entity_value, "
                         f"MAX({m_sql}) AS measure_value FROM dataset "
                         f"WHERE {det_sql} IS NOT NULL GROUP BY {det_sql}) "
-                        f"SELECT {sum_expr} / NULLIF(COUNT(DISTINCT entity_value), 0) FROM {alias}"
+                        f"SELECT {sum_expr} / NULLIF(COUNT(DISTINCT entity_value), 0) "
+                        f"FROM {alias} WHERE entity_value IS NOT NULL"
                     )
                     rationale = (
                         f"Deduplicates {m_col.name} to {det_col.name} grain before dividing "
-                        f"by distinct {id_col.name} entities."
+                        f"by distinct {id_col.name} entities, excluding deduplicated groups "
+                        f"without a known {id_col.name} from the per-{stem} average."
                     )
-                    caveats = _merge_caveats(base_caveats, _dedup_caveat(m_col, det_col))
+                    extra_caveats = (
+                        (
+                            f"Deduplicated {det_col.name} groups without a known {id_col.name} "
+                            f"are excluded from the {m_col.name} numerator so unassigned "
+                            f"records do not inflate the per-{stem} average."
+                        ),
+                    )
+                    caveats = _merge_caveats(
+                        base_caveats,
+                        _dedup_caveat(m_col, det_col),
+                        *(extra_caveats if id_col.statistics.missing_count > 0 else ()),
+                    )
                 else:
                     sql = (
                         f"WITH {alias} AS (SELECT {det_sql}, MAX({m_sql}) AS measure_value "
